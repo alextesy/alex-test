@@ -2,8 +2,8 @@ import tweepy
 import os
 from dotenv import load_dotenv
 from typing import List, Optional
-from .base_scraper import SocialMediaScraper
-from ..models.message import Tweet, Message
+from scrapers.base_scraper import SocialMediaScraper
+from models.message import Tweet, Message
 
 load_dotenv()
 

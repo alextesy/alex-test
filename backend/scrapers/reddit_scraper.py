@@ -2,8 +2,9 @@ import praw
 import os
 from dotenv import load_dotenv
 from typing import List
-from base_scraper import SocialMediaScraper
+from scrapers.base_scraper import SocialMediaScraper
 from models.message import RedditPost, RedditComment, Message
+from datetime import datetime
 
 load_dotenv()
 
@@ -110,22 +111,21 @@ class RedditScraper(SocialMediaScraper):
         """
         return self._get_subreddit_posts(subreddit_name, limit, sort, time_filter)
 
-    def _process_comments(self, submission, limit: int = 100) -> List[Message]:
+    def _process_comments(self, submission, limit: int = None) -> List[Message]:
         """
         Process comments from a Reddit submission.
         
         Args:
             submission: PRAW submission object
-            limit (int): Maximum number of comments to process
+            limit (int): Maximum number of comments to process (None for all comments)
             
         Returns:
             List[Message]: List of processed comments
         """
         comments = []
-        submission.comments.replace_more(limit=0)  # Remove MoreComments objects
         
         def process_comment(comment, depth=0):
-            if len(comments) >= limit:
+            if limit and len(comments) >= limit:
                 return
                 
             comment_obj = RedditComment(
@@ -146,8 +146,8 @@ class RedditScraper(SocialMediaScraper):
             for reply in comment.replies:
                 process_comment(reply, depth + 1)
                 
-        # Process top-level comments
-        for comment in submission.comments[:limit]:
+        # Process all comments
+        for comment in submission.comments:
             process_comment(comment)
             
         return comments
@@ -186,4 +186,52 @@ class RedditScraper(SocialMediaScraper):
             
         except Exception as e:
             print(f"Error fetching post and comments for ID {post_id}: {str(e)}")
+            return None, []
+
+    def get_daily_discussion_comments(self, limit: int = None) -> tuple[Message, List[Message]]:
+        """
+        Find and fetch the most recent Daily Discussion Thread from wallstreetbets
+        and all its comments.
+        
+        Args:
+            limit (int): Maximum number of comments to fetch (None for all comments)
+            
+        Returns:
+            tuple[Message, List[Message]]: Tuple of (daily discussion post, comments)
+        """
+        try:
+            # Get today's date in the format "December 27, 2024"
+            today = datetime.now().strftime("%B %d, %Y")
+            search_title = f"Daily Discussion Thread for {today}"
+            
+            # Search in wallstreetbets subreddit
+            subreddit = self.reddit.subreddit('wallstreetbets')
+            
+            # Search through today's posts
+            for submission in subreddit.new(limit=20):  # Check recent posts
+                if submission.title.startswith("Daily Discussion Thread for"):
+                    post = RedditPost(
+                        id=submission.id,
+                        content=submission.selftext,
+                        author=str(submission.author) if submission.author else '[deleted]',
+                        timestamp=submission.created_utc,
+                        url=submission.url,
+                        score=submission.score,
+                        platform='reddit',
+                        source="reddit/r/wallstreetbets",
+                        title=submission.title,
+                        selftext=submission.selftext,
+                        num_comments=submission.num_comments,
+                        subreddit='wallstreetbets'
+                    )
+                    
+                    # Get all comments
+                    submission.comments.replace_more(limit=None)  # Replace all MoreComments objects
+                    comments = self._process_comments(submission, limit=limit)
+                    return post, comments
+                    
+            return None, []
+            
+        except Exception as e:
+            print(f"Error fetching daily discussion thread: {str(e)}")
             return None, []

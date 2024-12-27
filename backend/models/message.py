@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Set
 from sqlalchemy.orm import Session
-from processors.text_processor import TextProcessor
 from models.database_models import DBMessage, Stock
 from models.stock import Stock
 
@@ -20,33 +19,7 @@ class Message(ABC):
     source: str
     mentioned_stocks: Set[Stock] = field(default_factory=set)
     sentiment: float = 0.0
-    
-    # Class-level processor instance
-    _processor: Optional[TextProcessor] = None
-    
-    @classmethod
-    def get_processor(cls) -> TextProcessor:
-        """Get or create the text processor instance"""
-        if cls._processor is None:
-            cls._processor = TextProcessor()
-        return cls._processor
-    
-    def __post_init__(self):
-        """Process text after initialization"""
-        self.process_text()
-    
-    def process_text(self) -> None:
-        """Extract stock mentions and sentiment from text"""
-        processor = self.get_processor()
-        title = getattr(self, 'title', '')
-        
-        # Process text and update attributes
-        stock_symbols, self.sentiment = processor.analyze_text(
-            text=self.content,
-            title=title
-        )
-        # Convert symbols to Stock objects
-        self.mentioned_stocks = {Stock(symbol=symbol) for symbol in stock_symbols}
+    message_type: str = field(init=False)  # Will be set by child classes
     
     def to_db_model(self, db: Session) -> DBMessage:
         """Convert to database model"""
@@ -59,7 +32,8 @@ class Message(ABC):
             score=self.score,
             platform=self.platform,
             source=self.source,
-            sentiment=self.sentiment
+            sentiment=self.sentiment,
+            message_type=self.message_type
         )
         
         # Add platform-specific fields
@@ -89,6 +63,9 @@ class Tweet(Message):
     retweet_count: int = 0    # Added default value
     favorite_count: int = 0    # Added default value
     
+    def __post_init__(self):
+        self.message_type = 'tweet'
+    
     @property
     def comments_count(self) -> int:
         """Alias for retweet_count to maintain consistency with other platforms"""
@@ -102,21 +79,28 @@ class RedditPost(Message):
     num_comments: int = 0
     subreddit: str = ''
     
+    def __post_init__(self):
+        self.message_type = 'reddit_post'
+    
     @property
     def comments_count(self) -> int:
         """Alias for num_comments to maintain consistency with other platforms"""
         return self.num_comments
 
 @dataclass
-class RedditComment(Message):
+class RedditComment(RedditPost):
     """Reddit comment model"""
     parent_id: str = ''  # ID of the parent post or comment
     depth: int = 0      # Nesting level of the comment
+    title: str = None   # Comments don't have titles
+    
+    def __post_init__(self):
+        self.message_type = 'reddit_comment'
     
     @property
     def comments_count(self) -> int:
-        """Comments on a comment are replies"""
-        return getattr(self, 'replies_count', 0)
+        """Number of replies to this comment"""
+        return self.num_comments
 
     def to_db_model(self, db: Session) -> DBMessage:
         """Convert to database model with comment-specific fields"""

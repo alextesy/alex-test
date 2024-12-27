@@ -38,6 +38,9 @@ class DBMessage(Base):
     
     # Relationship with stocks
     stocks = relationship("Stock", secondary=message_stocks, back_populates="messages")
+    
+    # Add message_type field
+    message_type = Column(String)  # 'tweet', 'reddit_post', 'reddit_comment'
 
 class Stock(Base):
     __tablename__ = "stocks"
