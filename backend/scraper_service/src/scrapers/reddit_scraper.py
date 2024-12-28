@@ -1,41 +1,42 @@
-import praw
+import logging
 import os
+import praw
 from dotenv import load_dotenv
-from typing import List
-from scrapers.base_scraper import SocialMediaScraper
-from models.message import RedditPost, RedditComment, Message
+from typing import List, Optional, Tuple
+from backend.models.message import RedditPost, RedditComment, Message
+from .base_scraper import SocialMediaScraper
 from datetime import datetime
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 class RedditScraper(SocialMediaScraper):
     def __init__(self):
-        self.reddit = praw.Reddit(
-            client_id=os.getenv('REDDIT_CLIENT_ID'),
-            client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
-            user_agent=os.getenv('REDDIT_USER_AGENT', 'stocks_test 1.0')
-        )
+        logger.info("Initializing Reddit scraper")
+        try:
+            self.reddit = praw.Reddit(
+                client_id=os.getenv('REDDIT_CLIENT_ID'),
+                client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
+                user_agent=os.getenv('REDDIT_USER_AGENT', 'stocks_test 1.0')
+            )
+            logger.info("Successfully initialized Reddit API client")
+        except Exception as e:
+            logger.error(f"Failed to initialize Reddit API client: {str(e)}")
+            raise
+            
         # Default stock-related subreddits
         self.stock_subreddits = ['wallstreetbets', 'stocks', 'investing', 'stockmarket', 'options']
+        logger.info(f"Monitoring subreddits: {', '.join(self.stock_subreddits)}")
 
     def _get_subreddit_posts(self, subreddit_name: str, limit: int = 100, sort: str = 'hot', time_filter: str = None) -> List[Message]:
-        """
-        Private method to fetch posts from a specified subreddit.
-        
-        Args:
-            subreddit_name (str): Name of the subreddit to fetch posts from
-            limit (int): Maximum number of posts to return (default: 100)
-            sort (str): Sort method ('hot', 'new', 'top', 'rising') (default: 'hot')
-            time_filter (str): One of 'all', 'day', 'hour', 'month', 'week', 'year'.
-                              Only applies to 'top' and 'controversial' sorts. (default: None)
-            
-        Returns:
-            List[Message]: List of Reddit posts from the specified subreddit
-        """
+        """Private method to fetch posts from a specified subreddit."""
+        logger.info(f"Fetching {limit} {sort} posts from r/{subreddit_name}")
         posts = []
         
         try:
             subreddit = self.reddit.subreddit(subreddit_name)
+            logger.debug(f"Successfully connected to r/{subreddit_name}")
             
             # Get the appropriate sorting method
             if sort == 'hot':
@@ -48,27 +49,36 @@ class RedditScraper(SocialMediaScraper):
                 submissions = subreddit.rising(limit=limit)
             else:
                 submissions = subreddit.hot(limit=limit)
+            
+            logger.debug(f"Using {sort} sort for r/{subreddit_name}")
                 
             for post in submissions:
-                post_obj = RedditPost(
-                    id=post.id,
-                    content=post.selftext,
-                    author=str(post.author) if post.author else '[deleted]',
-                    timestamp=post.created_utc,
-                    url=post.url,
-                    score=post.score,
-                    platform='reddit',
-                    source=f"reddit/r/{subreddit_name}",
-                    title=post.title,
-                    selftext=post.selftext,
-                    num_comments=post.num_comments,
-                    subreddit=subreddit_name
-                )
-                posts.append(post_obj)
+                try:
+                    post_obj = RedditPost(
+                        id=post.id,
+                        content=post.selftext,
+                        author=str(post.author) if post.author else '[deleted]',
+                        timestamp=post.created_utc,
+                        created_at=datetime.fromtimestamp(post.created_utc),
+                        url=post.url,
+                        score=post.score,
+                        platform='reddit',
+                        source=f"reddit/r/{subreddit_name}",
+                        title=post.title,
+                        selftext=post.selftext,
+                        num_comments=post.num_comments,
+                        subreddit=subreddit_name
+                    )
+                    posts.append(post_obj)
+                    logger.debug(f"Processed post {post.id} from r/{subreddit_name}")
+                except Exception as e:
+                    logger.error(f"Error processing post {post.id} from r/{subreddit_name}: {str(e)}")
+                    continue
                 
         except Exception as e:
-            print(f"Error fetching posts from r/{subreddit_name}: {str(e)}")
+            logger.error(f"Error fetching posts from r/{subreddit_name}: {str(e)}")
             
+        logger.info(f"Retrieved {len(posts)} posts from r/{subreddit_name}")
         return posts
 
     def get_posts(self, query: str, limit: int = 100, time_filter: str = None) -> List[Message]:
@@ -112,44 +122,45 @@ class RedditScraper(SocialMediaScraper):
         return self._get_subreddit_posts(subreddit_name, limit, sort, time_filter)
 
     def _process_comments(self, submission, limit: int = None) -> List[Message]:
-        """
-        Process comments from a Reddit submission.
-        
-        Args:
-            submission: PRAW submission object
-            limit (int): Maximum number of comments to process (None for all comments)
-            
-        Returns:
-            List[Message]: List of processed comments
-        """
+        """Process comments from a Reddit submission."""
+        logger.info(f"Processing comments for submission {submission.id}")
         comments = []
         
         def process_comment(comment, depth=0):
             if limit and len(comments) >= limit:
                 return
                 
-            comment_obj = RedditComment(
-                id=comment.id,
-                content=comment.body,
-                author=str(comment.author) if comment.author else '[deleted]',
-                timestamp=comment.created_utc,
-                url=f"https://reddit.com{comment.permalink}",
-                score=comment.score,
-                platform='reddit',
-                source=f"reddit/r/{comment.subreddit.display_name}",
-                parent_id=comment.parent_id,
-                depth=depth
-            )
-            comments.append(comment_obj)
-            
-            # Process replies recursively
-            for reply in comment.replies:
-                process_comment(reply, depth + 1)
+            try:
+                comment_obj = RedditComment(
+                    id=comment.id,
+                    content=comment.body,
+                    author=str(comment.author) if comment.author else '[deleted]',
+                    timestamp=comment.created_utc,
+                    created_at=datetime.fromtimestamp(comment.created_utc),
+                    url=f"https://reddit.com{comment.permalink}",
+                    score=comment.score,
+                    platform='reddit',
+                    source=f"reddit/r/{comment.subreddit.display_name}",
+                    parent_id=comment.parent_id,
+                    depth=depth
+                )
+                comments.append(comment_obj)
+                logger.debug(f"Processed comment {comment.id} at depth {depth}")
+                
+                # Process replies recursively
+                for reply in comment.replies:
+                    process_comment(reply, depth + 1)
+            except Exception as e:
+                logger.error(f"Error processing comment {comment.id}: {str(e)}")
                 
         # Process all comments
-        for comment in submission.comments:
-            process_comment(comment)
+        try:
+            for comment in submission.comments:
+                process_comment(comment)
+        except Exception as e:
+            logger.error(f"Error processing comments for submission {submission.id}: {str(e)}")
             
+        logger.info(f"Processed {len(comments)} total comments for submission {submission.id}")
         return comments
 
     def get_post_with_comments(self, post_id: str, comment_limit: int = 100) -> tuple[Message, List[Message]]:
@@ -171,6 +182,7 @@ class RedditScraper(SocialMediaScraper):
                 content=submission.selftext,
                 author=str(submission.author) if submission.author else '[deleted]',
                 timestamp=submission.created_utc,
+                created_at=datetime.fromtimestamp(submission.created_utc),
                 url=submission.url,
                 score=submission.score,
                 platform='reddit',
@@ -189,32 +201,29 @@ class RedditScraper(SocialMediaScraper):
             return None, []
 
     def get_daily_discussion_comments(self, limit: int = None) -> tuple[Message, List[Message]]:
-        """
-        Find and fetch the most recent Daily Discussion Thread from wallstreetbets
-        and all its comments.
-        
-        Args:
-            limit (int): Maximum number of comments to fetch (None for all comments)
-            
-        Returns:
-            tuple[Message, List[Message]]: Tuple of (daily discussion post, comments)
-        """
+        """Find and fetch the most recent Daily Discussion Thread from wallstreetbets."""
+        logger.info("Searching for today's Daily Discussion Thread")
         try:
             # Get today's date in the format "December 27, 2024"
             today = datetime.now().strftime("%B %d, %Y")
             search_title = f"Daily Discussion Thread for {today}"
+            logger.debug(f"Searching for thread with title: {search_title}")
             
             # Search in wallstreetbets subreddit
             subreddit = self.reddit.subreddit('wallstreetbets')
+            submissions = subreddit.search(query=search_title, limit=20, sort='new', time_filter='day')
             
             # Search through today's posts
-            for submission in subreddit.new(limit=20):  # Check recent posts
-                if submission.title.startswith("Daily Discussion Thread for"):
+            for submission in submissions:
+                if submission.title.startswith("Daily Discussion Thread for") or submission.title.startswith("Weekend Discussion Thread for"):
+                    logger.info(f"Found discussion thread: {submission.title}")
+                    
                     post = RedditPost(
                         id=submission.id,
                         content=submission.selftext,
                         author=str(submission.author) if submission.author else '[deleted]',
                         timestamp=submission.created_utc,
+                        created_at=datetime.fromtimestamp(submission.created_utc),
                         url=submission.url,
                         score=submission.score,
                         platform='reddit',
@@ -226,12 +235,16 @@ class RedditScraper(SocialMediaScraper):
                     )
                     
                     # Get all comments
-                    submission.comments.replace_more(limit=None)  # Replace all MoreComments objects
+                    logger.info(f"Replacing MoreComments objects, limit={limit}")
+                    submission.comments.replace_more(limit=limit)
                     comments = self._process_comments(submission, limit=limit)
-                    return post, comments
                     
+                    logger.info(f"Successfully retrieved discussion thread with {len(comments)} comments")
+                    return post, comments
+            
+            logger.warning("No daily discussion thread found for today")
             return None, []
             
         except Exception as e:
-            print(f"Error fetching daily discussion thread: {str(e)}")
+            logger.error(f"Error fetching daily discussion thread: {str(e)}")
             return None, []

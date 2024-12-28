@@ -1,6 +1,6 @@
-from abc import ABC
-from typing import List
-from models.message import Message
+from abc import ABC, abstractmethod
+from typing import List, Optional, Tuple
+from backend.models.message import Message
 
 class SocialMediaScraper(ABC):
     """Base class for social media scrapers"""

@@ -1,18 +1,18 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, Boolean
 from sqlalchemy.orm import relationship
-from db.database import Base
+from backend.db.database import Base
 
-# Association table for many-to-many relationship between messages and stocks
+# Association table for many-to-many relationship between processed messages and stocks
 message_stocks = Table(
     'message_stocks',
     Base.metadata,
-    Column('message_id', String, ForeignKey('messages.id')),
+    Column('message_id', String, ForeignKey('processed_messages.id')),
     Column('stock_symbol', String, ForeignKey('stocks.symbol'))
 )
 
-class DBMessage(Base):
-    __tablename__ = "messages"
+class RawMessage(Base):
+    __tablename__ = "raw_messages"
 
     id = Column(String, primary_key=True)
     content = Column(String)
@@ -20,9 +20,33 @@ class DBMessage(Base):
     timestamp = Column(Float)
     url = Column(String)
     score = Column(Integer)
+    platform = Column(String)  # 'twitter' or 'reddit'
+    raw_data = Column(String)  # JSON string of all raw data
+    processed = Column(Boolean, default=False)  # Flag to track processing status
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Platform-specific fields
+    title = Column(String, nullable=True)
+    parent_id = Column(String, nullable=True)
+
+class ProcessedMessage(Base):
+    __tablename__ = "processed_messages"
+
+    id = Column(String, primary_key=True)
+    raw_message_id = Column(String, ForeignKey('raw_messages.id'))
+    content = Column(String)
+    author = Column(String)
+    timestamp = Column(Float)
+    created_at = Column(DateTime)  # When the post/comment was written
+    url = Column(String)
+    score = Column(Integer)
     platform = Column(String)
     source = Column(String)
     sentiment = Column(Float)
+    processed_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationship with raw message
+    raw_message = relationship("RawMessage", backref="processed_messages")
     
     # Platform-specific fields
     title = Column(String, nullable=True)
@@ -33,23 +57,23 @@ class DBMessage(Base):
     selftext = Column(String, nullable=True)
     
     # Comment-specific fields
-    parent_id = Column(String, nullable=True)  # For comments, links to parent post/comment
-    depth = Column(Integer, nullable=True)     # Nesting level for comments
+    parent_id = Column(String, nullable=True)
+    depth = Column(Integer, nullable=True)
     
     # Relationship with stocks
-    stocks = relationship("Stock", secondary=message_stocks, back_populates="messages")
+    stocks = relationship("DBStock", secondary=message_stocks, back_populates="messages")
     
-    # Add message_type field
+    # Message type
     message_type = Column(String)  # 'tweet', 'reddit_post', 'reddit_comment'
 
-class Stock(Base):
+class DBStock(Base):
     __tablename__ = "stocks"
 
     symbol = Column(String, primary_key=True)
     name = Column(String)
     sector = Column(String, nullable=True)
-    industry = Column(String, nullable=True)
+    exchange = Column(String, nullable=True)
     last_updated = Column(DateTime, default=datetime.utcnow)
     
     # Relationship with messages
-    messages = relationship("DBMessage", secondary=message_stocks, back_populates="stocks") 
+    messages = relationship("ProcessedMessage", secondary=message_stocks, back_populates="stocks") 

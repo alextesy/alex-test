@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Set
 from sqlalchemy.orm import Session
-from models.database_models import DBMessage, Stock
-from models.stock import Stock
+from .database_models import ProcessedMessage, DBStock
+from .stock import Stock
 
 @dataclass
 class Message(ABC):
@@ -17,17 +17,19 @@ class Message(ABC):
     score: int
     platform: str
     source: str
+    created_at: datetime = field(default_factory=datetime.utcnow)
     mentioned_stocks: Set[Stock] = field(default_factory=set)
     sentiment: float = 0.0
     message_type: str = field(init=False)  # Will be set by child classes
     
-    def to_db_model(self, db: Session) -> DBMessage:
+    def to_db_model(self, db: Session) -> ProcessedMessage:
         """Convert to database model"""
-        db_message = DBMessage(
+        db_message = ProcessedMessage(
             id=self.id,
             content=self.content,
             author=self.author,
             timestamp=self.timestamp,
+            created_at=self.created_at,
             url=self.url,
             score=self.score,
             platform=self.platform,
@@ -102,7 +104,7 @@ class RedditComment(RedditPost):
         """Number of replies to this comment"""
         return self.num_comments
 
-    def to_db_model(self, db: Session) -> DBMessage:
+    def to_db_model(self, db: Session) -> ProcessedMessage:
         """Convert to database model with comment-specific fields"""
         db_message = super().to_db_model(db)
         db_message.parent_id = self.parent_id

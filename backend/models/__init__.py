@@ -1,3 +1,3 @@
-from models.message import *
-from models.stock import *
-from models.database_models import * 
+from .message import *
+from .stock import *
+from .database_models import * 
