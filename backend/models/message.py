@@ -110,3 +110,28 @@ class RedditComment(RedditPost):
         db_message.parent_id = self.parent_id
         db_message.depth = self.depth
         return db_message
+
+@dataclass
+class CNBCArticle(Message):
+    """CNBC article model"""
+    title: str = ''  # Make title optional with default empty string
+    summary: str = ''
+    category: str = '' 
+    author_title: str = ''  # Author's title/position at CNBC
+    
+    def __post_init__(self):
+        self.message_type = 'cnbc_article'
+    
+    @property
+    def comments_count(self) -> int:
+        """CNBC articles don't have comments in our system"""
+        return 0
+
+    def to_db_model(self, db: Session) -> ProcessedMessage:
+        """Convert to database model with CNBC-specific fields"""
+        db_message = super().to_db_model(db)
+        db_message.title = self.title
+        db_message.summary = self.summary
+        db_message.category = self.category
+        db_message.author_title = self.author_title
+        return db_message

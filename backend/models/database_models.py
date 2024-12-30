@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, Boolean
 from sqlalchemy.orm import relationship
-from backend.db.database import Base
+from db.database import Base
 
 # Association table for many-to-many relationship between processed messages and stocks
 message_stocks = Table(
@@ -59,6 +59,11 @@ class ProcessedMessage(Base):
     # Comment-specific fields
     parent_id = Column(String, nullable=True)
     depth = Column(Integer, nullable=True)
+    
+    # CNBC-specific fields
+    summary = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    author_title = Column(String, nullable=True)
     
     # Relationship with stocks
     stocks = relationship("DBStock", secondary=message_stocks, back_populates="messages")

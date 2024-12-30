@@ -3,7 +3,7 @@ import os
 import praw
 from dotenv import load_dotenv
 from typing import List, Optional, Tuple
-from backend.models.message import RedditPost, RedditComment, Message
+from models.message import RedditPost, RedditComment, Message
 from .base_scraper import SocialMediaScraper
 from datetime import datetime
 

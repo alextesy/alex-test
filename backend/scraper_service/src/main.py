@@ -1,10 +1,10 @@
 import logging
 from datetime import datetime
 from time import sleep
-from backend.db.database import SessionLocal, init_db
-from backend.models.database_models import RawMessage
-from backend.scraper_service.src.scrapers.reddit_scraper import RedditScraper
-from backend.scraper_service.src.scrapers.twitter_scraper import TwitterScraper
+from db.database import SessionLocal, init_db
+from models.database_models import RawMessage
+from scraper_service.src.scrapers.reddit_scraper import RedditScraper
+from scraper_service.src.scrapers.twitter_scraper import TwitterScraper
 
 # Set up logging with more detailed format
 logging.basicConfig(

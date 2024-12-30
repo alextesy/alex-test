@@ -4,7 +4,7 @@ import tweepy
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import List, Optional
-from backend.models.message import Tweet, Message
+from models.message import Tweet, Message
 from .base_scraper import SocialMediaScraper
 
 load_dotenv()
