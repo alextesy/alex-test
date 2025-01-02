@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 import praw
 from dotenv import load_dotenv
 from typing import List, Optional, Tuple
@@ -121,7 +122,7 @@ class RedditScraper(SocialMediaScraper):
         """
         return self._get_subreddit_posts(subreddit_name, limit, sort, time_filter)
 
-    def _process_comments(self, submission, limit: int = None) -> List[Message]:
+    def _process_comments(self, comments, limit: int = None) -> List[Message]:
         """Process comments from a Reddit submission."""
         logger.info(f"Processing comments for submission {submission.id}")
         comments = []
@@ -155,7 +156,7 @@ class RedditScraper(SocialMediaScraper):
                 
         # Process all comments
         try:
-            for comment in submission.comments:
+            for comment in comments:
                 process_comment(comment)
         except Exception as e:
             logger.error(f"Error processing comments for submission {submission.id}: {str(e)}")
@@ -193,7 +194,7 @@ class RedditScraper(SocialMediaScraper):
                 subreddit=submission.subreddit.display_name
             )
             
-            comments = self._process_comments(submission, comment_limit)
+            comments = self._process_comments(submission.comments, comment_limit)
             return post, comments
             
         except Exception as e:
@@ -211,7 +212,7 @@ class RedditScraper(SocialMediaScraper):
             
             # Search in wallstreetbets subreddit
             subreddit = self.reddit.subreddit('wallstreetbets')
-            submissions = subreddit.search(query=search_title, limit=20, sort='new', time_filter='day')
+            submissions = subreddit.search(query=search_title, limit=200, sort='new', time_filter='day')
             
             # Search through today's posts
             for submission in submissions:
@@ -237,7 +238,7 @@ class RedditScraper(SocialMediaScraper):
                     # Get all comments
                     logger.info(f"Replacing MoreComments objects, limit={limit}")
                     submission.comments.replace_more(limit=limit)
-                    comments = self._process_comments(submission, limit=limit)
+                    comments = self._process_comments(submission.comments, limit=limit)
                     
                     logger.info(f"Successfully retrieved discussion thread with {len(comments)} comments")
                     return post, comments
@@ -248,3 +249,27 @@ class RedditScraper(SocialMediaScraper):
         except Exception as e:
             logger.error(f"Error fetching daily discussion thread: {str(e)}")
             return None, []
+        
+    def get_new_comments(self, submission_id: str, last_check_time: float = None) -> List[Message]:
+        """Fetch only new comments since last check time."""
+        try:
+            # Set last_check_time to 1 hour ago if not provided
+            if last_check_time is None:
+                last_check_time = time.time() - 3600  # Current time minus 1 hour
+                
+            submission = self.reddit.submission(id=submission_id)
+            submission.comments.replace_more(limit=None)
+            
+            # Filter comments created after last_check_time
+            new_comments = []
+            for comment in submission.comments.list():
+                if comment.created_utc > last_check_time:
+                    new_comments.append(comment)
+            comments = self._process_comments(submission)
+
+            logger.info(f"Found {len(comments)} new comments")
+            return comments
+            
+        except Exception as e:
+            logger.error(f"Error fetching new comments: {str(e)}")
+            return []

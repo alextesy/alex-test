@@ -21,16 +21,31 @@ def scrape_reddit(db):
     reddit_posts = []
     
     try:
-        # Get the daily discussion thread and its comments
+        # Try to get today's daily discussion thread
         logger.info("Fetching daily discussion thread and comments")
-        daily_post, daily_comments = reddit_scraper.get_daily_discussion_comments(limit=5)
+        daily_post, daily_comments = reddit_scraper.get_daily_discussion_comments(limit=None)
         
-        if daily_post:
-            logger.info(f"Found daily discussion thread: {daily_post.title}")
+        # Check if this is a new daily discussion thread
+        try:
+            with open("last_daily_discussion_id.txt", "r") as f:
+                last_discussion_id = f.read().strip()
+            is_new_discussion = daily_post.id != last_discussion_id
+        except FileNotFoundError:
+            is_new_discussion = True
+            last_discussion_id = None
+        
+        if is_new_discussion:
+            logger.info(f"Found new daily discussion thread: {daily_post.title}")
+            # Store the new daily discussion ID
+            with open("last_daily_discussion_id.txt", "w") as f:
+                f.write(daily_post.id)
             reddit_posts.extend(daily_comments)
-            logger.info(f"Retrieved {len(daily_comments)} comments from daily discussion")
+            logger.info(f"Retrieved {len(daily_comments)} comments from new daily discussion")
         else:
-            logger.warning("No daily discussion thread found")
+            logger.info("Found existing daily discussion thread, checking for new comments")
+            new_comments = reddit_scraper.get_new_comments(daily_post.id)
+            reddit_posts.extend(new_comments)
+            logger.info(f"Retrieved {len(new_comments)} new comments")
     
         logger.info("Processing and storing Reddit messages")
         for post in reddit_posts:
