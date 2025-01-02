@@ -3,9 +3,9 @@ import json
 from datetime import datetime
 from time import sleep
 from db.database import SessionLocal
-from models.database_models import RawMessage, ProcessedMessage
+from models.database_models import RawMessage, ProcessedMessage, MessageType
 from processors.message_processor import MessageProcessor
-from models.message import Tweet, RedditPost, RedditComment
+from models.message import Tweet, RedditPost, RedditComment, CNBCArticle
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,35 +21,43 @@ def create_message_from_raw(raw_msg: RawMessage):
         'timestamp': raw_msg.timestamp,
         'url': raw_msg.url,
         'score': raw_msg.score,
-        'platform': raw_msg.platform,
-        'source': raw_msg.source
+        'created_at': raw_msg.created_at
     }
     
-    if raw_msg.platform == "twitter":
+    if raw_msg.message_type == MessageType.TWEET:
         return Tweet(
             **base_args,
-            retweet_count=raw_data.get("retweet_count", 0),
-            favorite_count=raw_data.get("favorite_count", 0)
+            retweet_count=raw_msg.retweet_count or 0,
+            favorite_count=raw_msg.favorite_count or 0
         )
-    elif raw_msg.platform == "reddit":
-        if raw_msg.parent_id:  # It's a comment
-            return RedditComment(
-                **base_args,
-                title=raw_msg.title,
-                selftext=raw_data.get("selftext", ""),
-                num_comments=raw_data.get("num_comments", 0),
-                subreddit=raw_data.get("subreddit", ""),
-                parent_id=raw_msg.parent_id,
-                depth=raw_data.get("depth", 0)
-            )
-        else:  # It's a post
-            return RedditPost(
-                **base_args,
-                title=raw_msg.title,
-                selftext=raw_data.get("selftext", ""),
-                num_comments=raw_data.get("num_comments", 0),
-                subreddit=raw_data.get("subreddit", "")
-            )
+    elif raw_msg.message_type == MessageType.REDDIT_POST:
+        return RedditPost(
+            **base_args,
+            title=raw_msg.title,
+            selftext=raw_msg.selftext or "",
+            num_comments=raw_msg.num_comments or 0,
+            subreddit=raw_msg.subreddit
+        )
+    elif raw_msg.message_type == MessageType.REDDIT_COMMENT:
+        return RedditComment(
+            **base_args,
+            title=raw_msg.title,
+            selftext=raw_data.get("selftext", ""),
+            num_comments=raw_msg.num_comments or 0,
+            subreddit=raw_msg.subreddit,
+            parent_id=raw_msg.parent_id,
+            depth=raw_msg.depth or 0
+        )
+    elif raw_msg.message_type == MessageType.CNBC_ARTICLE:
+        return CNBCArticle(
+            **base_args,
+            title=raw_msg.title,
+            summary=raw_msg.summary,
+            category=raw_msg.category,
+            author_title=raw_msg.author_title
+        )
+    else:
+        raise ValueError(f"Unknown message type: {raw_msg.message_type}")
 
 def process_messages():
     """Main processing loop"""

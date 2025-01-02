@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Set
 from sqlalchemy.orm import Session
-from .database_models import ProcessedMessage, DBStock
+from .database_models import ProcessedMessage, DBStock, MessageType
 from .stock import Stock
 
 @dataclass
@@ -15,12 +15,10 @@ class Message(ABC):
     timestamp: float
     url: str
     score: int
-    platform: str
-    source: str
     created_at: datetime = field(default_factory=datetime.utcnow)
     mentioned_stocks: Set[Stock] = field(default_factory=set)
     sentiment: float = 0.0
-    message_type: str = field(init=False)  # Will be set by child classes
+    message_type: MessageType = field(init=False)  # Will be set by child classes
     
     def to_db_model(self, db: Session) -> ProcessedMessage:
         """Convert to database model"""
@@ -32,8 +30,6 @@ class Message(ABC):
             created_at=self.created_at,
             url=self.url,
             score=self.score,
-            platform=self.platform,
-            source=self.source,
             sentiment=self.sentiment,
             message_type=self.message_type
         )
@@ -66,7 +62,7 @@ class Tweet(Message):
     favorite_count: int = 0    # Added default value
     
     def __post_init__(self):
-        self.message_type = 'tweet'
+        self.message_type = MessageType.TWEET
     
     @property
     def comments_count(self) -> int:
@@ -82,7 +78,7 @@ class RedditPost(Message):
     subreddit: str = ''
     
     def __post_init__(self):
-        self.message_type = 'reddit_post'
+        self.message_type = MessageType.REDDIT_POST
     
     @property
     def comments_count(self) -> int:
@@ -97,7 +93,7 @@ class RedditComment(RedditPost):
     title: str = None   # Comments don't have titles
     
     def __post_init__(self):
-        self.message_type = 'reddit_comment'
+        self.message_type = MessageType.REDDIT_COMMENT
     
     @property
     def comments_count(self) -> int:
@@ -120,7 +116,7 @@ class CNBCArticle(Message):
     author_title: str = ''  # Author's title/position at CNBC
     
     def __post_init__(self):
-        self.message_type = 'cnbc_article'
+        self.message_type = MessageType.CNBC_ARTICLE
     
     @property
     def comments_count(self) -> int:

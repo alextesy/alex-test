@@ -5,6 +5,7 @@ import praw
 from dotenv import load_dotenv
 from typing import List, Optional, Tuple
 from models.message import RedditPost, RedditComment, Message
+from models.database_models import MessageType
 from .base_scraper import SocialMediaScraper
 from datetime import datetime
 
@@ -63,8 +64,6 @@ class RedditScraper(SocialMediaScraper):
                         created_at=datetime.fromtimestamp(post.created_utc),
                         url=post.url,
                         score=post.score,
-                        platform='reddit',
-                        source=f"reddit/r/{subreddit_name}",
                         title=post.title,
                         selftext=post.selftext,
                         num_comments=post.num_comments,
@@ -122,13 +121,13 @@ class RedditScraper(SocialMediaScraper):
         """
         return self._get_subreddit_posts(subreddit_name, limit, sort, time_filter)
 
-    def _process_comments(self, comments, limit: int = None) -> List[Message]:
+    def _process_comments(self, comments_list, limit: int = None) -> List[Message]:
         """Process comments from a Reddit submission."""
-        logger.info(f"Processing comments for submission {submission.id}")
-        comments = []
+        logger.info(f"Processing comments (limit={limit})")
+        processed_comments = []
         
         def process_comment(comment, depth=0):
-            if limit and len(comments) >= limit:
+            if limit and len(processed_comments) >= limit:
                 return
                 
             try:
@@ -140,12 +139,11 @@ class RedditScraper(SocialMediaScraper):
                     created_at=datetime.fromtimestamp(comment.created_utc),
                     url=f"https://reddit.com{comment.permalink}",
                     score=comment.score,
-                    platform='reddit',
-                    source=f"reddit/r/{comment.subreddit.display_name}",
                     parent_id=comment.parent_id,
-                    depth=depth
+                    depth=depth,
+                    subreddit=comment.subreddit.display_name
                 )
-                comments.append(comment_obj)
+                processed_comments.append(comment_obj)
                 logger.debug(f"Processed comment {comment.id} at depth {depth}")
                 
                 # Process replies recursively
@@ -156,13 +154,13 @@ class RedditScraper(SocialMediaScraper):
                 
         # Process all comments
         try:
-            for comment in comments:
+            for comment in comments_list:
                 process_comment(comment)
         except Exception as e:
-            logger.error(f"Error processing comments for submission {submission.id}: {str(e)}")
+            logger.error(f"Error processing comments: {str(e)}")
             
-        logger.info(f"Processed {len(comments)} total comments for submission {submission.id}")
-        return comments
+        logger.info(f"Processed {len(processed_comments)} total comments")
+        return processed_comments
 
     def get_post_with_comments(self, post_id: str, comment_limit: int = 100) -> tuple[Message, List[Message]]:
         """
@@ -186,8 +184,6 @@ class RedditScraper(SocialMediaScraper):
                 created_at=datetime.fromtimestamp(submission.created_utc),
                 url=submission.url,
                 score=submission.score,
-                platform='reddit',
-                source=f"reddit/r/{submission.subreddit.display_name}",
                 title=submission.title,
                 selftext=submission.selftext,
                 num_comments=submission.num_comments,
@@ -227,8 +223,6 @@ class RedditScraper(SocialMediaScraper):
                         created_at=datetime.fromtimestamp(submission.created_utc),
                         url=submission.url,
                         score=submission.score,
-                        platform='reddit',
-                        source="reddit/r/wallstreetbets",
                         title=submission.title,
                         selftext=submission.selftext,
                         num_comments=submission.num_comments,

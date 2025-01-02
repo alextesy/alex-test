@@ -1,7 +1,14 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, Boolean, Enum
 from sqlalchemy.orm import relationship
+import enum
 from db.database import Base
+
+class MessageType(str, enum.Enum):
+    TWEET = 'tweet'
+    REDDIT_POST = 'reddit_post'
+    REDDIT_COMMENT = 'reddit_comment'
+    CNBC_ARTICLE = 'cnbc_article'
 
 # Association table for many-to-many relationship between processed messages and stocks
 message_stocks = Table(
@@ -20,14 +27,28 @@ class RawMessage(Base):
     timestamp = Column(Float)
     url = Column(String)
     score = Column(Integer)
-    platform = Column(String)  # 'twitter' or 'reddit'
+    message_type = Column(Enum(MessageType))  # Type of the message (tweet, reddit_post, etc.)
     raw_data = Column(String)  # JSON string of all raw data
     processed = Column(Boolean, default=False)  # Flag to track processing status
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Platform-specific fields
+    # Twitter fields
+    retweet_count = Column(Integer, nullable=True)
+    favorite_count = Column(Integer, nullable=True)
+    
+    # Reddit fields
     title = Column(String, nullable=True)
+    selftext = Column(String, nullable=True)
+    num_comments = Column(Integer, nullable=True)
+    subreddit = Column(String, nullable=True)
     parent_id = Column(String, nullable=True)
+    depth = Column(Integer, nullable=True)
+    
+    # CNBC fields
+    summary = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    author_title = Column(String, nullable=True)
 
 class ProcessedMessage(Base):
     __tablename__ = "processed_messages"
@@ -40,8 +61,7 @@ class ProcessedMessage(Base):
     created_at = Column(DateTime)  # When the post/comment was written
     url = Column(String)
     score = Column(Integer)
-    platform = Column(String)
-    source = Column(String)
+    message_type = Column(Enum(MessageType))  # Type of the message (tweet, reddit_post, etc.)
     sentiment = Column(Float)
     processed_at = Column(DateTime, default=datetime.utcnow)
     
@@ -67,9 +87,6 @@ class ProcessedMessage(Base):
     
     # Relationship with stocks
     stocks = relationship("DBStock", secondary=message_stocks, back_populates="messages")
-    
-    # Message type
-    message_type = Column(String)  # 'tweet', 'reddit_post', 'reddit_comment'
 
 class DBStock(Base):
     __tablename__ = "stocks"

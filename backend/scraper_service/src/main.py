@@ -2,7 +2,8 @@ import logging
 from datetime import datetime
 from time import sleep
 from db.database import SessionLocal, init_db
-from models.database_models import RawMessage
+from models.database_models import RawMessage, MessageType
+from models.message import Message, Tweet, RedditPost, RedditComment
 from scraper_service.src.scrapers.reddit_scraper import RedditScraper
 from scraper_service.src.scrapers.twitter_scraper import TwitterScraper
 
@@ -13,6 +14,49 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+def convert_to_raw_message(message: Message) -> RawMessage:
+    """Convert any message type to a RawMessage"""
+    base_args = {
+        'id': message.id,
+        'content': message.content,
+        'author': message.author,
+        'timestamp': message.timestamp,
+        'url': message.url,
+        'score': message.score,
+        'created_at': message.created_at
+    }
+    
+    # Add type-specific fields based on message type
+    if isinstance(message, Tweet):
+        return RawMessage(
+            **base_args,
+            message_type=MessageType.TWEET,
+            retweet_count=message.retweet_count,
+            favorite_count=message.favorite_count
+        )
+    elif isinstance(message, RedditComment):
+        return RawMessage(
+            **base_args,
+            message_type=MessageType.REDDIT_COMMENT,
+            title=message.title,
+            selftext=getattr(message, 'selftext', ''),
+            num_comments=message.num_comments,
+            subreddit=message.subreddit,
+            parent_id=message.parent_id,
+            depth=message.depth
+        )
+    elif isinstance(message, RedditPost):
+        return RawMessage(
+            **base_args,
+            message_type=MessageType.REDDIT_POST,
+            title=message.title,
+            selftext=message.selftext,
+            num_comments=message.num_comments,
+            subreddit=message.subreddit
+        )
+    else:
+        raise ValueError(f"Unsupported message type: {type(message)}")
 
 def scrape_reddit(db):
     """Scrape Reddit posts and comments"""
@@ -50,17 +94,7 @@ def scrape_reddit(db):
         logger.info("Processing and storing Reddit messages")
         for post in reddit_posts:
             try:
-                raw_msg = RawMessage(
-                    id=post.id,
-                    content=post.content,
-                    author=post.author,
-                    timestamp=post.timestamp,
-                    url=post.url,
-                    score=post.score,
-                    platform="reddit",
-                    title=getattr(post, 'title', None),
-                    parent_id=getattr(post, 'parent_id', None)
-                )
+                raw_msg = convert_to_raw_message(post)
                 db.add(raw_msg)
                 logger.debug(f"Stored Reddit message {post.id}")
             except Exception as e:
@@ -98,15 +132,7 @@ def scrape_twitter(db):
         logger.info("Processing and storing Twitter messages")
         for tweet in tweets:
             try:
-                raw_msg = RawMessage(
-                    id=tweet.id,
-                    content=tweet.content,
-                    author=tweet.author,
-                    timestamp=tweet.timestamp,
-                    url=tweet.url,
-                    score=tweet.score,
-                    platform="twitter"
-                )
+                raw_msg = convert_to_raw_message(tweet)
                 db.add(raw_msg)
                 logger.debug(f"Stored Twitter message {tweet.id}")
             except Exception as e:
