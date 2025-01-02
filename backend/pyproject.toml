@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "stock-social-sentiment-backend"
+name = "backend"
 version = "0.1.0"
 description = "Backend for stock social sentiment analysis"
 authors = ["Your Name <your.email@example.com>"]
