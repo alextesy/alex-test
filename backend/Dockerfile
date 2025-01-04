@@ -31,7 +31,6 @@ ENV ENV=production
 
 # Create logs directory
 RUN mkdir -p /app/logs && \
-    touch /app/logs/scraper.log && \
     chmod -R 777 /app/logs
 
 # Set up cron job
@@ -39,8 +38,20 @@ RUN echo "0 * * * * /app/run_scraper.sh" > /etc/cron.d/scraper-cron && \
     chmod 0644 /etc/cron.d/scraper-cron && \
     crontab /etc/cron.d/scraper-cron
 
-# Create entrypoint script
-RUN echo '#!/bin/bash\ncron && tail -f /app/logs/scraper.log' > /entrypoint.sh && \
+# Create entrypoint script with better log handling
+RUN echo '#!/bin/bash\n\
+echo "Starting entrypoint script..."\n\
+echo "Creating log directory..."\n\
+mkdir -p /app/logs\n\
+echo "Creating log file..."\n\
+touch /app/logs/scraper.log\n\
+echo "Setting permissions..."\n\
+chmod 777 /app/logs/scraper.log\n\
+echo "Starting cron..."\n\
+cron\n\
+echo "Starting log tail..."\n\
+tail -f /app/logs/scraper.log\n\
+' > /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
 # Run cron in the foreground
