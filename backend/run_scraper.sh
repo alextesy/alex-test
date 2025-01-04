@@ -1,3 +1,4 @@
 #!/bin/bash
-cd /app
-python -m scraper_service.src.main >> /app/logs/scraper.log 2>&1 
+cd ~/app/alex-test/backend
+export PYTHONPATH=.
+python3 -m scraper_service.src.main >> /app/logs/alexstocks/scraper.log 2>&1 
