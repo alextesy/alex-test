@@ -6,6 +6,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    cron \
     && rm -rf /var/lib/apt/lists/*
 
 # Install poetry
@@ -17,6 +18,9 @@ COPY pyproject.toml poetry.lock* ./
 # Copy the rest of the application
 COPY . .
 
+# Make the run script executable
+RUN chmod +x run_scraper.sh
+
 # Install dependencies
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --only main,scraper
@@ -24,5 +28,17 @@ RUN poetry config virtualenvs.create false \
 # Set environment variables
 ENV PYTHONPATH=/app
 
-# Run the scraper service
-CMD ["python", "-m", "scraper_service.src.main"] 
+# Create log file
+RUN touch /var/log/scraper.log
+
+# Set up cron job
+RUN echo "0 * * * * /app/run_scraper.sh" > /etc/cron.d/scraper-cron && \
+    chmod 0644 /etc/cron.d/scraper-cron && \
+    crontab /etc/cron.d/scraper-cron
+
+# Create entrypoint script
+RUN echo '#!/bin/bash\ncron && tail -f /var/log/scraper.log' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+# Run cron in the foreground
+CMD ["/entrypoint.sh"] 
