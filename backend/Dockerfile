@@ -52,7 +52,6 @@ echo "Running initial scraper..."\n\
 echo "Starting cron..."\n\
 cron\n\
 echo "Starting log tail..."\n\
-tail -f /app/logs/scraper.log\n\
 ' > /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
