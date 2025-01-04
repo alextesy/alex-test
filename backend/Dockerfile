@@ -47,6 +47,8 @@ echo "Creating log file..."\n\
 touch /app/logs/scraper.log\n\
 echo "Setting permissions..."\n\
 chmod 777 /app/logs/scraper.log\n\
+echo "Running initial scraper..."\n\
+/app/run_scraper.sh\n\
 echo "Starting cron..."\n\
 cron\n\
 echo "Starting log tail..."\n\
