@@ -27,12 +27,13 @@ RUN poetry config virtualenvs.create false \
 
 # Set environment variables
 ENV PYTHONPATH=/app
+ENV ENV=production
 
 # Create log file
 RUN touch /var/log/scraper.log
 
 # Set up cron job
-RUN echo "0 * * * * /app/run_scraper.sh" > /etc/cron.d/scraper-cron && \
+RUN echo "0 * * * * /alex-test/backend/run_scraper.sh" > /etc/cron.d/scraper-cron && \
     chmod 0644 /etc/cron.d/scraper-cron && \
     crontab /etc/cron.d/scraper-cron
 

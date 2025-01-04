@@ -5,11 +5,21 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Get environment and database configuration
+ENV = os.getenv('ENV', 'development')  # default to development if not set
 DATABASE_URL = os.getenv('DATABASE_URL')
+DATABASE_DOCKER_URL = os.getenv('DATABASE_DOCKER_URL')
+
+# Use Docker URL in production, otherwise use regular DATABASE_URL
+if ENV == 'production' and DATABASE_DOCKER_URL:
+    FINAL_DATABASE_URL = DATABASE_DOCKER_URL
+else:
+    FINAL_DATABASE_URL = DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(FINAL_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
