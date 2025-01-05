@@ -18,6 +18,7 @@ else:
     FINAL_DATABASE_URL = DATABASE_URL
 
 logger = logging.getLogger(__name__)
+logger.info(f"Using {ENV} database")
 
 engine = create_engine(FINAL_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

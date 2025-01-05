@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 from models.message import RedditPost, RedditComment, Message
 from models.database_models import MessageType
 from .base_scraper import SocialMediaScraper
-from datetime import datetime
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -198,21 +198,25 @@ class RedditScraper(SocialMediaScraper):
             return None, []
 
     def get_daily_discussion_comments(self, limit: int = None) -> tuple[Message, List[Message]]:
-        """Find and fetch the most recent Daily Discussion Thread from wallstreetbets."""
-        logger.info("Searching for today's Daily Discussion Thread")
+        """Find and fetch the most recent Daily/Weekend Discussion Thread from wallstreetbets."""
+        logger.info("Searching for most recent discussion thread")
         try:
-            # Get today's date in the format "December 27, 2024"
-            today = datetime.now().strftime("%B %d, %Y")
-            search_title = f"Daily Discussion Thread for {today}"
-            logger.debug(f"Searching for thread with title: {search_title}")
+            # Get today's date and check if it's weekend
+            now = datetime.now()
+            is_weekend = now.weekday() >= 5  # 5 = Saturday, 6 = Sunday
+            
+            # Set search parameters based on whether it's weekend
+            thread_type = "Weekend" if is_weekend else "Daily"
+            search_title = f"{thread_type} Discussion Thread"
+            logger.debug(f"Searching for thread with title containing: {search_title}")
             
             # Search in wallstreetbets subreddit
             subreddit = self.reddit.subreddit('wallstreetbets')
-            submissions = subreddit.search(query=search_title, limit=200, sort='new', time_filter='day')
+            submissions = subreddit.search(query=search_title, limit=10, sort='new')
             
-            # Search through today's posts
+            # Get the most recent matching thread
             for submission in submissions:
-                if submission.title.startswith("Daily Discussion Thread for") or submission.title.startswith("Weekend Discussion Thread for"):
+                if submission.title.startswith(search_title):
                     logger.info(f"Found discussion thread: {submission.title}")
                     
                     post = RedditPost(
@@ -237,13 +241,13 @@ class RedditScraper(SocialMediaScraper):
                     logger.info(f"Successfully retrieved discussion thread with {len(comments)} comments")
                     return post, comments
             
-            logger.warning("No daily discussion thread found for today")
+            thread_type = "weekend" if is_weekend else "daily"
+            logger.warning(f"No {thread_type} discussion thread found")
             return None, []
             
         except Exception as e:
-            logger.error(f"Error fetching daily discussion thread: {str(e)}")
+            logger.error(f"Error fetching discussion thread: {str(e)}")
             return None, []
-        
     def get_new_comments(self, submission_id: str, last_check_time: float = None) -> List[Message]:
         """Fetch only new comments since last check time."""
         try:
