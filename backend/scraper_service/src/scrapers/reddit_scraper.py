@@ -218,7 +218,7 @@ class RedditScraper(SocialMediaScraper):
         
         This method handles the expansion of "load more comments" items in a Reddit thread.
         It uses a combination of:
-        1. Small batch sizes (limit_per_request) to avoid hitting rate limits
+        1. Small batch sizes to avoid hitting rate limits
         2. Threshold to skip expanding small comment chains
         3. Retry with backoff when rate limits are hit
         
@@ -240,10 +240,10 @@ class RedditScraper(SocialMediaScraper):
                 logger.debug(f"Processing batch of {current_batch} 'more comments' instances")
                 
                 # Replace a small batch of "more comments"
+                # Note: replace_more only accepts limit and threshold parameters
                 comments.replace_more(
                     limit=current_batch,
-                    threshold=5,  # Only replace if there are at least 5 children
-                    limit_per_request=batch_size
+                    threshold=5  # Only replace if there are at least 5 children
                 )
                 
                 remaining -= current_batch

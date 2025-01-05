@@ -166,46 +166,34 @@ def scrape_twitter(db):
         raise
 
 def run_scraper(enable_twitter=False):
-    """Main scraping loop"""
+    """Single scraping run"""
     logger.info("Initializing scraper service")
-    cycle_count = 0
     
-    while True:
-        cycle_count += 1
-        logger.info(f"Starting scraping cycle #{cycle_count}")
-        cycle_start_time = datetime.now()
+    try:
+        logger.info("Creating database session")
+        db = SessionLocal()
         
-        try:
-            logger.info("Creating database session")
-            db = SessionLocal()
-            
-            # Scrape Reddit
-            logger.info("Starting Reddit scraping")
-            reddit_count = scrape_reddit(db)
-            logger.info(f"Successfully scraped {reddit_count} Reddit posts/comments")
-            
-            # Optionally scrape Twitter
-            if enable_twitter:
-                logger.info("Starting Twitter scraping")
-                twitter_count = scrape_twitter(db)
-                logger.info(f"Successfully scraped {twitter_count} tweets")
-            
-            db.commit()
-            cycle_duration = datetime.now() - cycle_start_time
-            logger.info(f"Scraping cycle #{cycle_count} completed in {cycle_duration}")
-            
-        except Exception as e:
-            logger.error(f"Error during scraping cycle #{cycle_count}: {str(e)}", exc_info=True)
-            db.rollback()
-            logger.info("Database changes rolled back due to error")
+        # Scrape Reddit
+        logger.info("Starting Reddit scraping")
+        reddit_count = scrape_reddit(db)
+        logger.info(f"Successfully scraped {reddit_count} Reddit posts/comments")
         
-        finally:
-            db.close()
-            logger.info("Database session closed")
-            
-        # Wait before next scraping cycle
-        logger.info("Waiting 5 minutes before next scraping cycle")
-        sleep(300)  # 5 minutes
+        # Optionally scrape Twitter
+        if enable_twitter:
+            logger.info("Starting Twitter scraping")
+            twitter_count = scrape_twitter(db)
+            logger.info(f"Successfully scraped {twitter_count} tweets")
+        
+        db.commit()
+        
+    except Exception as e:
+        logger.error(f"Error during scraping: {str(e)}", exc_info=True)
+        db.rollback()
+        logger.info("Database changes rolled back due to error")
+    
+    finally:
+        db.close()
+        logger.info("Database session closed")
 
 if __name__ == "__main__":
     logger.info("Starting scraper service...")
@@ -214,5 +202,5 @@ if __name__ == "__main__":
     logger.info("Initializing database...")
     init_db()
     
-    # Start the scraper
+    # Run the scraper once
     run_scraper() 
