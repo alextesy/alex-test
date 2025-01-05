@@ -8,6 +8,7 @@ from models.message import RedditPost, RedditComment, Message
 from models.database_models import MessageType
 from .base_scraper import SocialMediaScraper
 from datetime import datetime, timedelta
+from utils.retry import retry_with_backoff
 
 load_dotenv()
 
@@ -22,6 +23,9 @@ class RedditScraper(SocialMediaScraper):
                 client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
                 user_agent=os.getenv('REDDIT_USER_AGENT', 'stocks_test 1.0')
             )
+            # Add rate limiting parameters
+            self.request_delay = 2  # seconds between requests
+            self.last_request_time = 0
             logger.info("Successfully initialized Reddit API client")
         except Exception as e:
             logger.error(f"Failed to initialize Reddit API client: {str(e)}")
@@ -30,6 +34,16 @@ class RedditScraper(SocialMediaScraper):
         # Default stock-related subreddits
         self.stock_subreddits = ['wallstreetbets', 'stocks', 'investing', 'stockmarket', 'options']
         logger.info(f"Monitoring subreddits: {', '.join(self.stock_subreddits)}")
+
+    def _wait_for_rate_limit(self):
+        """Ensure we don't exceed Reddit's rate limits"""
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        if time_since_last_request < self.request_delay:
+            sleep_time = self.request_delay - time_since_last_request
+            logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+            time.sleep(sleep_time)
+        self.last_request_time = time.time()
 
     def _get_subreddit_posts(self, subreddit_name: str, limit: int = 100, sort: str = 'hot', time_filter: str = None) -> List[Message]:
         """Private method to fetch posts from a specified subreddit."""
@@ -197,77 +211,116 @@ class RedditScraper(SocialMediaScraper):
             print(f"Error fetching post and comments for ID {post_id}: {str(e)}")
             return None, []
 
+    @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))
+    def _replace_more_comments(self, comments, limit: Optional[int] = None) -> None:
+        """
+        Carefully replace MoreComments objects with actual comments.
+        
+        This method handles the expansion of "load more comments" items in a Reddit thread.
+        It uses a combination of:
+        1. Small batch sizes (limit_per_request) to avoid hitting rate limits
+        2. Threshold to skip expanding small comment chains
+        3. Retry with backoff when rate limits are hit
+        
+        Args:
+            comments: PRAW comment forest
+            limit: Maximum number of "more comments" instances to replace
+        """
+        try:
+            # Get total number of "more comments" instances
+            more_comments = sum(1 for comment in comments.list() if isinstance(comment, praw.models.MoreComments))
+            logger.info(f"Found {more_comments} 'more comments' instances to expand")
+            
+            # Process in small batches
+            batch_size = 2  # Only process 2 "more comments" at a time
+            remaining = limit if limit is not None else more_comments
+            
+            while remaining > 0:
+                current_batch = min(batch_size, remaining)
+                logger.debug(f"Processing batch of {current_batch} 'more comments' instances")
+                
+                # Replace a small batch of "more comments"
+                comments.replace_more(
+                    limit=current_batch,
+                    threshold=5,  # Only replace if there are at least 5 children
+                    limit_per_request=batch_size
+                )
+                
+                remaining -= current_batch
+                if remaining > 0:
+                    # Sleep between batches to respect rate limits
+                    time.sleep(2)
+                    
+            logger.info("Finished expanding all comment threads")
+            
+        except Exception as e:
+            logger.error(f"Failed to replace more comments: {str(e)}")
+            raise  # Let the retry decorator handle it
+
+    @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))
     def get_daily_discussion_comments(self, limit: int = None) -> tuple[Message, List[Message]]:
         """Find and fetch the most recent Daily/Weekend Discussion Thread from wallstreetbets."""
         logger.info("Searching for most recent discussion thread")
-        try:
-            # Get today's date and check if it's weekend
-            now = datetime.now()
-            is_weekend = now.weekday() >= 5  # 5 = Saturday, 6 = Sunday
-            
-            # Set search parameters based on whether it's weekend
-            thread_type = "Weekend" if is_weekend else "Daily"
-            search_title = f"{thread_type} Discussion Thread"
-            logger.debug(f"Searching for thread with title containing: {search_title}")
-            
-            # Search in wallstreetbets subreddit
-            subreddit = self.reddit.subreddit('wallstreetbets')
-            submissions = subreddit.search(query=search_title, limit=10, sort='new')
-            
-            # Get the most recent matching thread
-            for submission in submissions:
-                if submission.title.startswith(search_title):
-                    logger.info(f"Found discussion thread: {submission.title}")
-                    
-                    post = RedditPost(
-                        id=submission.id,
-                        content=submission.selftext,
-                        author=str(submission.author) if submission.author else '[deleted]',
-                        timestamp=submission.created_utc,
-                        created_at=datetime.fromtimestamp(submission.created_utc),
-                        url=submission.url,
-                        score=submission.score,
-                        title=submission.title,
-                        selftext=submission.selftext,
-                        num_comments=submission.num_comments,
-                        subreddit='wallstreetbets'
-                    )
-                    
-                    # Get all comments
-                    logger.info(f"Replacing MoreComments objects, limit={limit}")
-                    submission.comments.replace_more(limit=limit)
-                    comments = self._process_comments(submission.comments, limit=limit)
-                    
-                    logger.info(f"Successfully retrieved discussion thread with {len(comments)} comments")
-                    return post, comments
-            
-            thread_type = "weekend" if is_weekend else "daily"
-            logger.warning(f"No {thread_type} discussion thread found")
-            return None, []
-            
-        except Exception as e:
-            logger.error(f"Error fetching discussion thread: {str(e)}")
-            return None, []
+        
+        # Get today's date and check if it's weekend
+        now = datetime.now()
+        is_weekend = now.weekday() >= 5  # 5 = Saturday, 6 = Sunday
+        
+        # Set search parameters based on whether it's weekend
+        thread_type = "Weekend" if is_weekend else "Daily"
+        search_title = f"{thread_type} Discussion Thread"
+        logger.debug(f"Searching for thread with title containing: {search_title}")
+        
+        # Search in wallstreetbets subreddit
+        subreddit = self.reddit.subreddit('wallstreetbets')
+        submissions = subreddit.search(query=search_title, limit=10, sort='new')
+        
+        # Get the most recent matching thread
+        for submission in submissions:
+            if submission.title.startswith(search_title):
+                logger.info(f"Found discussion thread: {submission.title}")
+                
+                post = RedditPost(
+                    id=submission.id,
+                    content=submission.selftext,
+                    author=str(submission.author) if submission.author else '[deleted]',
+                    timestamp=submission.created_utc,
+                    created_at=datetime.fromtimestamp(submission.created_utc),
+                    url=submission.url,
+                    score=submission.score,
+                    title=submission.title,
+                    selftext=submission.selftext,
+                    num_comments=submission.num_comments,
+                    subreddit='wallstreetbets'
+                )
+                
+                # Get comments with careful rate limiting
+                self._replace_more_comments(submission.comments, limit=limit)
+                comments = self._process_comments(submission.comments, limit=limit)
+                
+                logger.info(f"Successfully retrieved discussion thread with {len(comments)} comments")
+                return post, comments
+                
+        thread_type = "weekend" if is_weekend else "daily"
+        logger.warning(f"No {thread_type} discussion thread found")
+        return None, []
+
+    @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))
     def get_new_comments(self, submission_id: str, last_check_time: float = None) -> List[Message]:
         """Fetch only new comments since last check time."""
-        try:
-            # Set last_check_time to 1 hour ago if not provided
-            if last_check_time is None:
-                last_check_time = time.time() - 3600  # Current time minus 1 hour
-                
-            submission = self.reddit.submission(id=submission_id)
-            submission.comments.replace_more(limit=None)
+        # Set last_check_time to 1 hour ago if not provided
+        if last_check_time is None:
+            last_check_time = time.time() - 3600  # Current time minus 1 hour
             
-            # Filter comments created after last_check_time
-            new_comments = []
-            for comment in submission.comments.list():
-                if comment.created_utc > last_check_time:
-                    new_comments.append(comment)
-            comments = self._process_comments(submission)
+        submission = self.reddit.submission(id=submission_id)
+        self._replace_more_comments(submission.comments, limit=None)
+        
+        # Filter comments created after last_check_time
+        new_comments = []
+        for comment in submission.comments.list():
+            if comment.created_utc > last_check_time:
+                new_comments.append(comment)
+        comments = self._process_comments(new_comments)
 
-            logger.info(f"Found {len(comments)} new comments")
-            return comments
-            
-        except Exception as e:
-            logger.error(f"Error fetching new comments: {str(e)}")
-            return []
+        logger.info(f"Found {len(comments)} new comments")
+        return comments

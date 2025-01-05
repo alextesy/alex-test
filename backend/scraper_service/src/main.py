@@ -24,21 +24,20 @@ def convert_to_raw_message(message: Message) -> RawMessage:
         'timestamp': message.timestamp,
         'url': message.url,
         'score': message.score,
-        'created_at': message.created_at
+        'created_at': message.created_at,
+        'message_type': message.message_type
     }
     
     # Add type-specific fields based on message type
     if isinstance(message, Tweet):
         return RawMessage(
             **base_args,
-            message_type=MessageType.TWEET,
             retweet_count=message.retweet_count,
             favorite_count=message.favorite_count
         )
     elif isinstance(message, RedditComment):
         return RawMessage(
             **base_args,
-            message_type=MessageType.REDDIT_COMMENT,
             title=message.title,
             selftext=getattr(message, 'selftext', ''),
             num_comments=message.num_comments,
@@ -49,7 +48,6 @@ def convert_to_raw_message(message: Message) -> RawMessage:
     elif isinstance(message, RedditPost):
         return RawMessage(
             **base_args,
-            message_type=MessageType.REDDIT_POST,
             title=message.title,
             selftext=message.selftext,
             num_comments=message.num_comments,
@@ -57,7 +55,6 @@ def convert_to_raw_message(message: Message) -> RawMessage:
         )
     else:
         raise ValueError(f"Unsupported message type: {type(message)}")
-
 def scrape_reddit(db):
     """Scrape Reddit posts and comments"""
     logger.info("Starting Reddit scraping process")
@@ -65,9 +62,30 @@ def scrape_reddit(db):
     reddit_posts = []
     
     try:
-        # Try to get today's daily discussion thread
+        # Try to get today's daily discussion thread with retries
         logger.info("Fetching daily discussion thread and comments")
-        daily_post, daily_comments = reddit_scraper.get_daily_discussion_comments(limit=None)
+        max_retries = 3
+        retry_delay = 60  # seconds
+        daily_post = None
+        daily_comments = []
+        
+        for attempt in range(max_retries):
+            try:
+                daily_post, daily_comments = reddit_scraper.get_daily_discussion_comments(limit=None)
+                if daily_post is not None:
+                    break
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed to get daily discussion, retrying in {retry_delay} seconds")
+                sleep(retry_delay)
+            except Exception as e:
+                logger.error(f"Error on attempt {attempt + 1}/{max_retries}: {str(e)}")
+                if attempt < max_retries - 1:
+                    sleep(retry_delay)
+                    continue
+                raise
+        
+        if daily_post is None:
+            logger.error("Failed to fetch daily discussion thread after all retries")
+            return 0
         
         # Check if this is a new daily discussion thread
         try:
@@ -92,19 +110,22 @@ def scrape_reddit(db):
             logger.info(f"Retrieved {len(new_comments)} new comments")
     
         logger.info("Processing and storing Reddit messages")
+        stored_count = 0
         for post in reddit_posts:
             try:
                 raw_msg = convert_to_raw_message(post)
                 db.add(raw_msg)
+                stored_count += 1
                 logger.debug(f"Stored Reddit message {post.id}")
             except Exception as e:
                 logger.error(f"Failed to store Reddit message {post.id}: {str(e)}")
                 continue
-    
-        return len(reddit_posts)
+                
+        return stored_count
+                
     except Exception as e:
         logger.error(f"Error in Reddit scraping process: {str(e)}")
-        raise
+        return 0
 
 def scrape_twitter(db):
     """Scrape Twitter posts"""
