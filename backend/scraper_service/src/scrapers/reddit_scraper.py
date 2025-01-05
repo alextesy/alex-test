@@ -8,7 +8,7 @@ from models.message import RedditPost, RedditComment, Message
 from models.database_models import MessageType
 from .base_scraper import SocialMediaScraper
 from datetime import datetime, timedelta
-from utils.retry import retry_with_backoff
+from ..utils.retry import retry_with_backoff
 
 load_dotenv()
 
