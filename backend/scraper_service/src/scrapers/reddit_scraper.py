@@ -258,7 +258,7 @@ class RedditScraper(SocialMediaScraper):
             raise  # Let the retry decorator handle it
 
     @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))
-    def get_daily_discussion_comments(self, limit: int = None) -> tuple[Message, List[Message]]:
+    def get_daily_discussion_comments(self, limit: int = None, last_discussion_id: str = None) -> tuple[Message, List[Message]]:
         """Find and fetch the most recent Daily/Weekend Discussion Thread from wallstreetbets."""
         logger.info("Searching for most recent discussion thread")
         
@@ -278,7 +278,13 @@ class RedditScraper(SocialMediaScraper):
         # Get the most recent matching thread
         for submission in submissions:
             if submission.title.startswith(search_title):
-                logger.info(f"Found discussion thread: {submission.title}")
+                # If we have a last_discussion_id and it matches current submission,
+                # return None to indicate no new thread
+                if last_discussion_id and submission.id == last_discussion_id:
+                    logger.info("Found same discussion thread as last time, skipping")
+                    return None, []
+                    
+                logger.info(f"Found new discussion thread: {submission.title}")
                 
                 post = RedditPost(
                     id=submission.id,

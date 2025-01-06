@@ -62,6 +62,15 @@ def scrape_reddit(db):
     reddit_posts = []
     
     try:
+        # First check if we already have today's daily discussion ID
+        try:
+            with open("last_daily_discussion_id.txt", "r") as f:
+                last_discussion_id = f.read().strip()
+            logger.info(f"Found last discussion ID: {last_discussion_id}")
+        except FileNotFoundError:
+            last_discussion_id = None
+            logger.info("No previous daily discussion ID found")
+
         # Try to get today's daily discussion thread with retries
         logger.info("Fetching daily discussion thread and comments")
         max_retries = 3
@@ -71,7 +80,11 @@ def scrape_reddit(db):
         
         for attempt in range(max_retries):
             try:
-                daily_post, daily_comments = reddit_scraper.get_daily_discussion_comments(limit=None)
+                # Pass the last_discussion_id to avoid re-fetching the same thread
+                daily_post, daily_comments = reddit_scraper.get_daily_discussion_comments(
+                    limit=None, 
+                    last_discussion_id=last_discussion_id
+                )
                 if daily_post is not None:
                     break
                 logger.warning(f"Attempt {attempt + 1}/{max_retries} failed to get daily discussion, retrying in {retry_delay} seconds")
@@ -87,27 +100,13 @@ def scrape_reddit(db):
             logger.error("Failed to fetch daily discussion thread after all retries")
             return 0
         
-        # Check if this is a new daily discussion thread
-        try:
-            with open("last_daily_discussion_id.txt", "r") as f:
-                last_discussion_id = f.read().strip()
-            is_new_discussion = daily_post.id != last_discussion_id
-        except FileNotFoundError:
-            is_new_discussion = True
-            last_discussion_id = None
-        
-        if is_new_discussion:
-            logger.info(f"Found new daily discussion thread: {daily_post.title}")
-            # Store the new daily discussion ID
-            with open("last_daily_discussion_id.txt", "w") as f:
-                f.write(daily_post.id)
-            reddit_posts.extend(daily_comments)
-            logger.info(f"Retrieved {len(daily_comments)} comments from new daily discussion")
-        else:
-            logger.info("Found existing daily discussion thread, checking for new comments")
-            new_comments = reddit_scraper.get_new_comments(daily_post.id)
-            reddit_posts.extend(new_comments)
-            logger.info(f"Retrieved {len(new_comments)} new comments")
+        # If we got here, we have a new daily discussion thread
+        logger.info(f"Found new daily discussion thread: {daily_post.title}")
+        # Store the new daily discussion ID
+        with open("last_daily_discussion_id.txt", "w") as f:
+            f.write(daily_post.id)
+        reddit_posts.extend(daily_comments)
+        logger.info(f"Retrieved {len(daily_comments)} comments from new daily discussion")
     
         logger.info("Processing and storing Reddit messages")
         stored_count = 0
