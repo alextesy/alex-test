@@ -33,3 +33,5 @@ yarn-error.log*
 *.swo
 frontend/package-lock.json
 backend/env
+/backend/scraper_service/src/.ipynb_checkpoints
+*/.ipynb_checkpoints/*
