@@ -135,13 +135,16 @@ class RedditScraper(SocialMediaScraper):
         """
         return self._get_subreddit_posts(subreddit_name, limit, sort, time_filter)
 
-    def _process_comments(self, comments_list, limit: int = None) -> List[Message]:
-        """Process comments from a Reddit submission."""
-        logger.info(f"Processing comments (limit={limit})")
+    def _process_comments(self, comments_list, limit: int = None, max_depth: int = 10) -> List[Message]:
+        """Process comments from a Reddit submission with depth limit."""
+        logger.info(f"Processing comments (limit={limit}, max_depth={max_depth})")
         processed_comments = []
         
         def process_comment(comment, depth=0):
             if limit and len(processed_comments) >= limit:
+                return
+            if depth >= max_depth:
+                logger.debug(f"Reached max depth {max_depth}, stopping recursion")
                 return
                 
             try:
@@ -160,16 +163,27 @@ class RedditScraper(SocialMediaScraper):
                 processed_comments.append(comment_obj)
                 logger.debug(f"Processed comment {comment.id} at depth {depth}")
                 
-                # Process replies recursively
-                for reply in comment.replies:
-                    process_comment(reply, depth + 1)
+                # Process replies recursively up to max_depth
+                if hasattr(comment, 'replies'):
+                    for reply in comment.replies:
+                        process_comment(reply, depth + 1)
             except Exception as e:
                 logger.error(f"Error processing comment {comment.id}: {str(e)}")
                 
-        # Process all comments
+        # Process all top-level comments
         try:
-            for comment in comments_list:
-                process_comment(comment)
+            if hasattr(comments_list, 'list'):
+                # Handle CommentForest object
+                for comment in comments_list:
+                    if limit and len(processed_comments) >= limit:
+                        break
+                    process_comment(comment)
+            else:
+                # Handle direct list of comments
+                for comment in comments_list:
+                    if limit and len(processed_comments) >= limit:
+                        break
+                    process_comment(comment)
         except Exception as e:
             logger.error(f"Error processing comments: {str(e)}")
             
@@ -258,8 +272,18 @@ class RedditScraper(SocialMediaScraper):
             raise  # Let the retry decorator handle it
 
     @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))
-    def get_daily_discussion_comments(self, limit: int = None, last_discussion_id: str = None) -> tuple[Message, List[Message]]:
-        """Find and fetch the most recent Daily/Weekend Discussion Thread from wallstreetbets."""
+    async def get_daily_discussion_comments(self, limit: int = None, last_discussion_id: str = None, last_check_time: float = None) -> tuple[Message, List[Message]]:
+        """Find and fetch the most recent Daily/Weekend Discussion Thread from wallstreetbets.
+        
+        Args:
+            limit (int, optional): Maximum number of comments to fetch. Defaults to None.
+            last_discussion_id (str, optional): ID of the last discussion thread checked. Defaults to None.
+            last_check_time (float, optional): Timestamp of last check for new comments. Defaults to None.
+            
+        Returns:
+            tuple[Message, List[Message]]: Tuple of (post, comments). Returns (None, []) if no new thread 
+            and no new comments since last check.
+        """
         logger.info("Searching for most recent discussion thread")
         
         # Get today's date and check if it's weekend
@@ -272,40 +296,26 @@ class RedditScraper(SocialMediaScraper):
         logger.debug(f"Searching for thread with title containing: {search_title}")
         
         # Search in wallstreetbets subreddit
-        subreddit = self.reddit.subreddit('wallstreetbets')
+        subreddit = await self.reddit.subreddit('wallstreetbets')
         submissions = subreddit.search(query=search_title, limit=10, sort='new')
         
         # Get the most recent matching thread
-        for submission in submissions:
+        async for submission in submissions:
             if submission.title.startswith(search_title):
-                # If we have a last_discussion_id and it matches current submission,
-                # return None to indicate no new thread
+                # If we have a last_discussion_id and it matches current submission
                 if last_discussion_id and submission.id == last_discussion_id:
-                    logger.info("Found same discussion thread as last time, skipping")
+                    logger.info("Found same discussion thread as last time")
+                    # If we have a last_check_time, fetch only new comments
+                    if last_check_time:
+                        logger.info(f"Fetching new comments since {datetime.fromtimestamp(last_check_time)}")
+                        new_comments = await self.get_new_comments(submission.id, last_check_time)
+                        # Get the post data again to ensure we have latest stats
+                        post, _ = await self.get_post_with_comments(submission.id, 0)
+                        return post, new_comments
                     return None, []
                     
                 logger.info(f"Found new discussion thread: {submission.title}")
-                
-                post = RedditPost(
-                    id=submission.id,
-                    content=submission.selftext,
-                    author=str(submission.author) if submission.author else '[deleted]',
-                    timestamp=submission.created_utc,
-                    created_at=datetime.fromtimestamp(submission.created_utc),
-                    url=submission.url,
-                    score=submission.score,
-                    title=submission.title,
-                    selftext=submission.selftext,
-                    num_comments=submission.num_comments,
-                    subreddit='wallstreetbets'
-                )
-                
-                # Get comments with careful rate limiting
-                self._replace_more_comments(submission.comments, limit=limit)
-                comments = self._process_comments(submission.comments, limit=limit)
-                
-                logger.info(f"Successfully retrieved discussion thread with {len(comments)} comments")
-                return post, comments
+                return await self.get_post_with_comments(submission.id, limit)
                 
         thread_type = "weekend" if is_weekend else "daily"
         logger.warning(f"No {thread_type} discussion thread found")

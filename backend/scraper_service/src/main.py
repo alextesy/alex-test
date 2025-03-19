@@ -55,6 +55,7 @@ def convert_to_raw_message(message: Message) -> RawMessage:
         )
     else:
         raise ValueError(f"Unsupported message type: {type(message)}")
+
 def scrape_reddit(db):
     """Scrape Reddit posts and comments"""
     logger.info("Starting Reddit scraping process")

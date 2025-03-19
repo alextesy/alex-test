@@ -3,6 +3,7 @@
     {
       "source": ".",
       "codebase": "default",
+      "runtime": "python310",
       "ignore": [
         "venv",
         ".git",
