@@ -480,346 +480,162 @@ class RedditScraper(SocialMediaScraper):
         Args:
             limit (int, optional): Maximum number of comments to fetch. Defaults to None.
             last_discussion_id (str, optional): ID of the last discussion thread checked. Defaults to None.
-            last_check_time (float, optional): Timestamp of last check for new comments. Defaults to None.
-            
+            last_check_time (float, optional): Timestamp of last check for new comments.
+                If not provided, the thread is treated as new.
+                
         Returns:
-            tuple[Message, List[Message]]: Tuple of (post, comments). Returns (None, []) if no new thread 
-            and no new comments since last check.
+            tuple[Message, List[Message]]: Tuple of (post, comments). Returns (None, []) if no matching thread found.
         """
         logger.info("Searching for most recent discussion thread")
         
-        # Get today's date and check if it's weekend
         now = datetime.now()
         is_weekend = now.weekday() >= 5  # 5 = Saturday, 6 = Sunday
-        
-        # Set search parameters based on whether it's weekend
         thread_type = "Weekend" if is_weekend else "Daily"
         search_title = f"{thread_type} Discussion Thread"
         logger.debug(f"Searching for thread with title containing: {search_title}")
         
-        max_retries = 3
-        retry_count = 0
-        backoff_time = 5  # Start with 5 seconds
+        # Wait for rate limiting before proceeding
+        await self._wait_for_rate_limit()
         
-        while retry_count < max_retries:
-            try:
-                # Add rate limiting wait
+        # Fetch the wallstreetbets subreddit
+        subreddit = await self.reddit.subreddit('wallstreetbets')
+        
+        submissions = []
+        # Approach 1: Search by title
+        logger.info("Approach 1: Searching for thread by title")
+        try:
+            async for submission in subreddit.search(query=search_title, limit=10, sort='new'):
                 await self._wait_for_rate_limit()
-                
-                # Search in wallstreetbets subreddit
-                subreddit = await self.reddit.subreddit('wallstreetbets')
-                
-                # Try two different approaches to find the daily discussion thread
-                
-                # Approach 1: Search for the thread by title
-                logger.info("Approach 1: Searching for thread by title")
-                try:
-                    submissions = []
-                    async for submission in subreddit.search(query=search_title, limit=10, sort='new'):
-                        # Add rate limiting between each submission fetch
-                        await self._wait_for_rate_limit()
-                        submissions.append(submission)
-                        
-                        # Break early if we find a matching thread to reduce API calls
-                        if submission.title.startswith(search_title):
-                            break
-                    
-                    logger.info(f"Found {len(submissions)} submissions from search")
-                except Exception as search_error:
-                    logger.error(f"Error searching for discussion thread: {str(search_error)}")
-                    submissions = []
-                
-                # Approach 2: Get hot posts and filter by title
-                if not submissions:
-                    logger.info("Approach 2: Getting hot posts and filtering by title")
-                    try:
-                        hot_submissions = []
-                        async for submission in subreddit.hot(limit=20):
-                            # Add rate limiting between each submission fetch
-                            await self._wait_for_rate_limit()
-                            
-                            # Check if this is a daily discussion thread
-                            if search_title.lower() in submission.title.lower():
-                                hot_submissions.append(submission)
-                                logger.info(f"Found potential thread from hot: {submission.title}")
-                        
-                        logger.info(f"Found {len(hot_submissions)} potential threads from hot")
-                        submissions.extend(hot_submissions)
-                    except Exception as hot_error:
-                        logger.error(f"Error getting hot posts: {str(hot_error)}")
-                
-                # Process the submissions we found
-                for submission in submissions:
-                    if search_title.lower() in submission.title.lower():
-                        # If we have a last_discussion_id and it matches current submission
-                        if last_discussion_id and submission.id == last_discussion_id:
-                            logger.info("Found same discussion thread as last time")
-                            # If we have a last_check_time, fetch only new comments
-                            if last_check_time:
-                                logger.info(f"Fetching new comments since {datetime.fromtimestamp(last_check_time)}")
-                                try:
-                                    # Get new comments with improved error handling
-                                    logger.info(f"Calling get_new_comments for thread ID {submission.id} with last_check_time={last_check_time}")
-                                    new_comments = await self.get_new_comments(submission.id, last_check_time)
-                                    logger.info(f"Successfully got {len(new_comments)} new comments from get_new_comments")
-                                    
-                                    # Get the post data again to ensure we have latest stats
-                                    logger.info(f"Fetching updated post data for thread ID {submission.id}")
-                                    post, _ = await self.get_post_with_comments(submission.id, 0)
-                                    logger.info(f"Successfully fetched updated post data for thread ID {submission.id}")
-                                    
-                                    # If we didn't get any new comments but there should be some, try a different approach
-                                    if len(new_comments) == 0 and submission.num_comments > 0:
-                                        logger.warning(f"No new comments found despite thread having {submission.num_comments} comments. Trying alternative approach.")
-                                        
-                                        # Try getting all comments and filtering by timestamp
-                                        try:
-                                            logger.info(f"Trying alternative approach: get all comments and filter by timestamp")
-                                            _, all_comments = await self.get_post_with_comments(submission.id, None)
-                                            logger.info(f"Got {len(all_comments)} total comments")
-                                            
-                                            # Filter comments by timestamp
-                                            filtered_comments = [c for c in all_comments if c.timestamp > last_check_time]
-                                            logger.info(f"Filtered to {len(filtered_comments)} new comments based on timestamp")
-                                            
-                                            if len(filtered_comments) > 0:
-                                                new_comments = filtered_comments
-                                        except Exception as alt_error:
-                                            logger.error(f"Error with alternative approach: {str(alt_error)}")
-                                    
-                                    return post, new_comments
-                                except Exception as comment_error:
-                                    logger.error(f"Error fetching new comments: {str(comment_error)}")
-                                    logger.debug("New comments error details:", exc_info=True)
-                                    
-                                    # Try a fallback approach if the first one fails
-                                    try:
-                                        logger.info("First approach failed, trying fallback approach")
-                                        # Get all comments and filter by timestamp
-                                        post, all_comments = await self.get_post_with_comments(submission.id, None)
-                                        
-                                        # Filter comments by timestamp
-                                        new_comments = [c for c in all_comments if c.timestamp > last_check_time]
-                                        logger.info(f"Fallback approach found {len(new_comments)} new comments")
-                                        
-                                        return post, new_comments
-                                    except Exception as fallback_error:
-                                        logger.error(f"Fallback approach also failed: {str(fallback_error)}")
-                                        return None, []
-                            
-                            # If we don't have a last_check_time, just return the post with no comments
-                            logger.info("No last_check_time provided, returning post with no comments")
-                            try:
-                                post, _ = await self.get_post_with_comments(submission.id, 0)
-                                return post, []
-                            except Exception as post_error:
-                                logger.error(f"Error fetching post: {str(post_error)}")
-                                return None, []
-                        
-                        # This is a new discussion thread
-                        logger.info(f"Found new discussion thread: {submission.title}")
-                        try:
-                            # Use our improved get_post_with_comments method
-                            logger.info(f"Calling get_post_with_comments for thread ID {submission.id} with limit={limit}")
-                            result = await self.get_post_with_comments(submission.id, limit)
-                            logger.info(f"Successfully returned from get_post_with_comments for thread ID {submission.id}")
-                            return result
-                        except Exception as post_error:
-                            logger.error(f"Error fetching post with comments: {str(post_error)}")
-                            logger.debug("Post error details:", exc_info=True)
-                            raise
-                
-                # If we get here, no matching thread was found
-                thread_type = "weekend" if is_weekend else "daily"
-                logger.warning(f"No {thread_type} discussion thread found")
-                return None, []
-                
-            except asyncio.TimeoutError:
-                retry_count += 1
-                logger.warning(f"Timeout error searching for discussion thread, retry {retry_count}/{max_retries}")
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
-                
-            except ConnectionError as conn_error:
-                retry_count += 1
-                logger.warning(f"Connection error searching for discussion thread, retry {retry_count}/{max_retries}: {str(conn_error)}")
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
-                
-            except Exception as e:
-                # For other exceptions, log and retry with backoff
-                retry_count += 1
-                logger.error(f"Error searching for discussion thread, retry {retry_count}/{max_retries}: {str(e)}")
-                
-                # If this is a connection reset error, add extra delay
-                if "Connection reset by peer" in str(e):
-                    extra_delay = 30  # Add 30 seconds extra delay for connection reset errors
-                    logger.warning(f"Connection reset detected, adding {extra_delay}s extra delay")
-                    await asyncio.sleep(extra_delay)
-                
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
+                submissions.append(submission)
+                # Break early if we find a submission whose title starts exactly with the search title
+                if submission.title.startswith(search_title):
+                    break
+            logger.info(f"Found {len(submissions)} submissions from search")
+        except Exception as search_error:
+            logger.error(f"Error searching for discussion thread: {str(search_error)}")
         
-        # If we've exhausted all retries
-        logger.error(f"Failed to find discussion thread after {max_retries} retries")
+        # Approach 2: If no submissions found via search, try fetching hot posts and filtering them
+        if not submissions:
+            logger.info("Approach 2: Getting hot posts and filtering by title")
+            try:
+                async for submission in subreddit.hot(limit=20):
+                    await self._wait_for_rate_limit()
+                    if search_title.lower() in submission.title.lower():
+                        submissions.append(submission)
+                        logger.info(f"Found potential thread from hot: {submission.title}")
+                logger.info(f"Found {len(submissions)} potential threads from hot")
+            except Exception as hot_error:
+                logger.error(f"Error getting hot posts: {str(hot_error)}")
+        
+        # Process the found submissions
+        for submission in submissions:
+            if search_title.lower() in submission.title.lower():
+                # If last_discussion_id is provided and matches, and a last_check_time is available,
+                # treat it as an existing thread to fetch only new comments.
+                if last_discussion_id and submission.id == last_discussion_id and last_check_time is not None:
+                    logger.info("Found existing discussion thread, fetching new comments based on last_check_time")
+                    try:
+                        new_comments = await self.get_new_comments(submission.id, last_check_time)
+                        # If no new comments were found but the thread indicates there should be some, try full fetch
+                        if not new_comments and submission.num_comments > 0:
+                            logger.warning(f"No new comments found with get_new_comments, trying full fetch for thread ID {submission.id}")
+                            _, all_comments = await self.get_post_with_comments(submission.id, None)
+                            new_comments = [c for c in all_comments if c.timestamp > last_check_time]
+                            logger.info(f"Filtered {len(new_comments)} new comments based on timestamp")
+                        # Get updated post data (with minimal comment fetch)
+                        post, _ = await self.get_post_with_comments(submission.id, 0)
+                        return post, new_comments
+                    except Exception as comment_error:
+                        logger.error(f"Error fetching new comments: {str(comment_error)}", exc_info=True)
+                        try:
+                            logger.info("Fallback: full fetch and filter by timestamp")
+                            post, all_comments = await self.get_post_with_comments(submission.id, None)
+                            new_comments = [c for c in all_comments if c.timestamp > last_check_time]
+                            return post, new_comments
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback failed: {str(fallback_error)}")
+                            return None, []
+                else:
+                    # No last_check_time means this is a new discussion thread.
+                    logger.info(f"Found new discussion thread: {submission.title}")
+                    try:
+                        result = await self.get_post_with_comments(submission.id, limit)
+                        return result
+                    except Exception as post_error:
+                        logger.error(f"Error fetching post with comments: {str(post_error)}", exc_info=True)
+                        raise
+        
+        logger.warning(f"No {thread_type} discussion thread found")
         return None, []
 
     @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))
     async def get_new_comments(self, submission_id: str, last_check_time: float = None) -> List[Message]:
-        """Fetch only new comments since last check time."""
-        # Set last_check_time to 1 hour ago if not provided
+        """Fetch only new comments since last check time.
+        
+        Args:
+            submission_id (str): The ID of the submission to fetch comments from.
+            last_check_time (float, optional): Timestamp to filter comments.
+                If not provided, it defaults to current time minus 6 hours, treating the post as new.
+        
+        Returns:
+            List[Message]: A list of new comment messages.
+        """
+        # If last_check_time is not provided, treat it as current time minus 6 hours.
         if last_check_time is None:
-            last_check_time = time.time() - 3600  # Current time minus 1 hour
-            
+            last_check_time = time.time() - 3600 * 6
+
         logger.info(f"Fetching new comments for submission {submission_id} since {datetime.fromtimestamp(last_check_time)}")
         
-        max_retries = 3
-        retry_count = 0
-        backoff_time = 5  # Start with 5 seconds
+        # Wait for rate limiting before fetching
+        await self._wait_for_rate_limit()
         
-        while retry_count < max_retries:
+        # Fetch the submission
+        submission = await self.reddit.submission(id=submission_id)
+        logger.info(f"Fetched submission: '{submission.title}' with {submission.num_comments} comments")
+        
+        # Wait for rate limiting before replacing more comments
+        await self._wait_for_rate_limit()
+        
+        # Replace more comments with a moderately aggressive limit
+        replace_limit = 30
+        logger.info(f"Replacing more comments (limit {replace_limit}) for submission {submission_id}")
+        await submission.comments.replace_more(limit=replace_limit)
+        logger.info(f"Comments replaced for submission {submission_id}")
+        
+        # Retrieve a flat list of comments
+        all_comments = submission.comments.list()
+        logger.info(f"Retrieved {len(all_comments)} comments from submission {submission_id}")
+        
+        # Filter comments that are not MoreComments objects and are newer than last_check_time
+        new_comments = [comment for comment in all_comments
+                        if not isinstance(comment, asyncpraw.models.MoreComments) and comment.created_utc > last_check_time]
+        logger.info(f"Found {len(new_comments)} new comments after filtering")
+        
+        # If no new comments are found but the submission indicates there should be some, try an alternative approach.
+        if not new_comments and submission.num_comments > 0:
+            logger.warning(f"No new comments found; trying alternative approach for submission {submission_id}")
             try:
-                # Add rate limiting wait
+                # Create a temporary Reddit client for a fresh fetch
+                temp_reddit = asyncpraw.Reddit(
+                    client_id=os.getenv('REDDIT_CLIENT_ID'),
+                    client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
+                    user_agent=os.getenv('REDDIT_USER_AGENT', 'stocks_test 1.0')
+                )
                 await self._wait_for_rate_limit()
-                
-                # Fetch the submission
-                logger.info(f"Fetching submission {submission_id} for new comments")
-                submission = await self.reddit.submission(id=submission_id)
-                logger.info(f"Successfully fetched submission: '{submission.title}' with {submission.num_comments} comments")
-                
-                # Use a more aggressive approach for replacing more comments
-                try:
-                    # Add rate limiting wait before fetching comments
-                    await self._wait_for_rate_limit()
-                    
-                    # Use a higher limit for replace_more to get more comments
-                    replace_limit = 30  # More aggressive for new comments
-                    logger.info(f"Using replace_more limit of {replace_limit} for new comments")
-                    
-                    logger.info(f"Replacing more comments for submission {submission_id}")
-                    await submission.comments.replace_more(limit=replace_limit)
-                    logger.info(f"Successfully replaced more comments for submission {submission_id}")
-                    
-                    # Filter comments created after last_check_time
-                    new_comments = []
-                    
-                    # Get all comments as a flat list
-                    try:
-                        logger.info(f"Getting flat comment list for submission {submission_id}")
-                        all_comments = submission.comments.list()
-                        logger.info(f"Successfully retrieved flat comment list with {len(all_comments)} comments")
-                        
-                        # Count comments by age
-                        new_count = 0
-                        old_count = 0
-                        more_count = 0
-                        
-                        for comment in all_comments:
-                            if isinstance(comment, asyncpraw.models.MoreComments):
-                                more_count += 1
-                                continue
-                                
-                            if comment.created_utc > last_check_time:
-                                new_comments.append(comment)
-                                new_count += 1
-                            else:
-                                old_count += 1
-                        
-                        logger.info(f"Comment age breakdown: {new_count} new, {old_count} old, {more_count} 'more comments' objects")
-                        logger.info(f"Filtered {len(new_comments)} new comments out of {len(all_comments)} total comments")
-                        
-                        # If we didn't find any new comments but there should be some, try a different approach
-                        if len(new_comments) == 0 and submission.num_comments > 0:
-                            logger.warning(f"No new comments found despite thread having {submission.num_comments} comments. Trying alternative approach.")
-                            
-                            # Try a more aggressive approach
-                            try:
-                                # Create a fresh client for a clean fetch
-                                logger.info("Creating a fresh client for alternative approach")
-                                temp_reddit = asyncpraw.Reddit(
-                                    client_id=os.getenv('REDDIT_CLIENT_ID'),
-                                    client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
-                                    user_agent=os.getenv('REDDIT_USER_AGENT', 'stocks_test 1.0')
-                                )
-                                
-                                # Wait for rate limiting
-                                await self._wait_for_rate_limit()
-                                
-                                # Fetch the submission again
-                                logger.info(f"Re-fetching submission {submission_id}")
-                                fresh_submission = await temp_reddit.submission(id=submission_id)
-                                
-                                # Wait for rate limiting
-                                await self._wait_for_rate_limit()
-                                
-                                # Get comments with a more aggressive approach
-                                logger.info("Fetching comments with more aggressive settings")
-                                await fresh_submission.comments.replace_more(limit=None)
-                                
-                                # Get all comments
-                                fresh_all_comments = fresh_submission.comments.list()
-                                logger.info(f"Got {len(fresh_all_comments)} comments from fresh fetch")
-                                
-                                # Filter by timestamp
-                                fresh_new_comments = []
-                                for comment in fresh_all_comments:
-                                    if not isinstance(comment, asyncpraw.models.MoreComments) and comment.created_utc > last_check_time:
-                                        fresh_new_comments.append(comment)
-                                
-                                logger.info(f"Filtered to {len(fresh_new_comments)} new comments from fresh fetch")
-                                
-                                # Close the temporary client
-                                await temp_reddit.close()
-                                
-                                # Use these comments if we got any
-                                if len(fresh_new_comments) > 0:
-                                    new_comments = fresh_new_comments
-                            except Exception as fresh_error:
-                                logger.error(f"Error with fresh fetch approach: {str(fresh_error)}")
-                                logger.debug("Fresh fetch error details:", exc_info=True)
-                        
-                    except Exception as list_error:
-                        logger.error(f"Error getting comment list for submission {submission_id}: {str(list_error)}")
-                        logger.debug("Comment list error details:", exc_info=True)
-                        raise
-                    
-                    # Process the new comments
-                    logger.info(f"Processing {len(new_comments)} new comments")
-                    comments = await self._process_comments(new_comments, None)
-                    logger.info(f"Successfully processed {len(comments)} new comments")
-                    
-                    return comments
-                    
-                except Exception as comment_error:
-                    logger.error(f"Error processing comments for submission {submission_id}: {str(comment_error)}")
-                    raise
-                    
-            except asyncio.TimeoutError:
-                retry_count += 1
-                logger.warning(f"Timeout error fetching new comments for submission {submission_id}, retry {retry_count}/{max_retries}")
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
-                
-            except ConnectionError as conn_error:
-                retry_count += 1
-                logger.warning(f"Connection error fetching new comments for submission {submission_id}, retry {retry_count}/{max_retries}: {str(conn_error)}")
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
-                
-            except Exception as e:
-                # For other exceptions, log and retry with backoff
-                retry_count += 1
-                logger.error(f"Error fetching new comments for submission {submission_id}, retry {retry_count}/{max_retries}: {str(e)}")
-                
-                # If this is a connection reset error, add extra delay
-                if "Connection reset by peer" in str(e):
-                    extra_delay = 30  # Add 30 seconds extra delay for connection reset errors
-                    logger.warning(f"Connection reset detected, adding {extra_delay}s extra delay")
-                    await asyncio.sleep(extra_delay)
-                
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
+                fresh_submission = await temp_reddit.submission(id=submission_id)
+                await self._wait_for_rate_limit()
+                # Use a more aggressive replacement to get all comments
+                await fresh_submission.comments.replace_more(limit=None)
+                fresh_all_comments = fresh_submission.comments.list()
+                logger.info(f"Alternative approach retrieved {len(fresh_all_comments)} comments")
+                new_comments = [comment for comment in fresh_all_comments
+                                if not isinstance(comment, asyncpraw.models.MoreComments) and comment.created_utc > last_check_time]
+                logger.info(f"Alternative approach found {len(new_comments)} new comments")
+                await temp_reddit.close()
+            except Exception as alt_error:
+                logger.error(f"Alternative approach failed: {str(alt_error)}", exc_info=True)
         
-        # If we've exhausted all retries
-        logger.error(f"Failed to fetch new comments for submission {submission_id} after {max_retries} retries")
-        return []
+        # Process and return the new comments
+        processed_comments = await self._process_comments(new_comments, None)
+        logger.info(f"Processed {len(processed_comments)} new comments for submission {submission_id}")
+        return processed_comments

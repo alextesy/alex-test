@@ -1,24 +1,14 @@
 import os
-import logging
-from firebase_admin import initialize_app, credentials, _apps
-from dotenv import load_dotenv
-import google.cloud.logging
 import sys
-from datetime import datetime, timedelta
-
-def convert_timestamp(timestamp) -> datetime:
-    """Convert various timestamp formats to datetime object."""
-    if isinstance(timestamp, datetime):
-        return timestamp
-    elif isinstance(timestamp, (int, float)):
-        return datetime.fromtimestamp(timestamp)
-    elif timestamp is None:
-        return None
-    else:
-        try:
-            return datetime.fromisoformat(str(timestamp))
-        except (ValueError, TypeError):
-            return None
+import logging
+import asyncio
+from dotenv import load_dotenv
+from firebase_admin import initialize_app, credentials, _apps
+from firebase_functions import scheduler_fn, options
+import google.cloud.logging
+from google.cloud import firestore, bigquery
+from bigquery_ops import process_chunk
+from firestore_ops import scrape_reddit
 
 # Load environment variables first
 load_dotenv()
@@ -32,7 +22,9 @@ if not _apps:
 PROJECT_ID = os.getenv('PROJECT_ID')
 if not PROJECT_ID:
     raise ValueError("PROJECT_ID environment variable is not set")
-
+STOCK_DATA_COLLECTION = os.getenv('FIRESTORE_STOCK_DATA_COLLECTION', 'stock_data')
+if not STOCK_DATA_COLLECTION:
+    raise ValueError("STOCK_DATA_COLLECTION environment variable is not set")
 # Setup logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -50,18 +42,12 @@ if not os.getenv('FUNCTIONS_EMULATOR'):  # Skip in local development
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         logger.addHandler(handler)
 
-# Export the scheduled functions
-from firebase_functions import scheduler_fn, options
-import asyncio
-from google.cloud import firestore
-from google.cloud import bigquery
-from firestore_ops import scrape_reddit
 
 @scheduler_fn.on_schedule(
-    schedule="0 */6 * * *",  # Run every 6 hours
+    schedule="0 */2 * * *",  # Run every 2 hours
     memory=options.MemoryOption.GB_1,
     max_instances=3,
-    timeout_sec=1800  # 30 minutes
+    timeout_sec=60*40  # 40 minutes
 )
 def run_scraper_scheduler(event: scheduler_fn.ScheduledEvent) -> str:
     """Scheduled function that runs every hour to scrape Reddit data"""
@@ -80,12 +66,12 @@ def run_scraper_scheduler(event: scheduler_fn.ScheduledEvent) -> str:
                 
                 # Set a longer timeout for the scraper to handle potential network issues
                 # Default is None which means no timeout
-                timeout = 1200  # 20 minutes timeout
+                timeout = 60 * 40  # 30 minutes timeout
                 
                 # Run the scraper with timeout
                 try:
                     # Create a task for the scraper
-                    scraper_task = asyncio.ensure_future(scrape_reddit(db))
+                    scraper_task = asyncio.ensure_future(scrape_reddit(db, limit=10000))
                     
                     # Run the task with a timeout
                     result = loop.run_until_complete(asyncio.wait_for(scraper_task, timeout))
@@ -120,107 +106,9 @@ def run_scraper_scheduler(event: scheduler_fn.ScheduledEvent) -> str:
         logger.error(error_msg, exc_info=True)
         return error_msg
 
-# Get collection name from environment
-STOCK_DATA_COLLECTION = os.getenv('FIRESTORE_STOCK_DATA_COLLECTION', 'stock_data')
-
-def delete_firestore_docs(db: firestore.Client, doc_refs: list, batch_size: int = 500) -> int:
-    """Delete documents from Firestore in batches.
-    
-    Args:
-        db: Firestore client
-        doc_refs: List of document references to delete
-        batch_size: Size of each deletion batch (max 500)
-        
-    Returns:
-        int: Number of documents deleted
-    """
-    total_deleted = 0
-    for i in range(0, len(doc_refs), batch_size):
-        batch = db.batch()
-        batch_docs = doc_refs[i:i + batch_size]
-        
-        for doc_ref in batch_docs:
-            batch.delete(doc_ref)
-            
-        batch.commit()
-        total_deleted += len(batch_docs)
-        logger.info(f"Deleted {len(batch_docs)} documents from Firestore")
-    
-    return total_deleted
-
-def transform_firestore_doc(doc: firestore.DocumentSnapshot) -> dict:
-    """Transform a Firestore document into BigQuery row format.
-    
-    Args:
-        doc: Firestore document snapshot
-        
-    Returns:
-        dict: Transformed row ready for BigQuery insertion
-    """
-    data = doc.to_dict()
-    return {
-        'document_id': doc.id,
-        'message_id': data.get('id'),
-        'content': data.get('content'),
-        'author': data.get('author'),
-        'timestamp': convert_timestamp(data.get('timestamp')).isoformat() if data.get('timestamp') else None,
-        'url': data.get('url'),
-        'score': data.get('score'),
-        'created_at': convert_timestamp(data.get('created_at')).isoformat() if data.get('created_at') else None,
-        'message_type': data.get('message_type'),
-        'source': data.get('source'),
-        'title': data.get('title'),
-        'selftext': data.get('selftext'),
-        'num_comments': data.get('num_comments'),
-        'subreddit': data.get('subreddit'),
-        'parent_id': data.get('parent_id'),
-        'depth': data.get('depth'),
-        'ingestion_timestamp': datetime.utcnow().isoformat()
-    }
-
-def process_chunk(bq_client: bigquery.Client, db: firestore.Client, chunk_docs: list, table_id: str, chunk_number: int, total_chunks: int) -> tuple[int, int]:
-    """Process a chunk of documents - transform, insert to BigQuery, and delete from Firestore.
-    
-    Args:
-        bq_client: BigQuery client
-        db: Firestore client
-        chunk_docs: List of documents to process
-        table_id: BigQuery table ID
-        chunk_number: Current chunk number (1-based)
-        total_chunks: Total number of chunks
-        
-    Returns:
-        tuple[int, int]: Number of rows inserted and documents deleted
-    """
-    chunk_doc_refs = []
-    rows_to_insert = []
-    
-    logger.info(f"Processing chunk {chunk_number} of {total_chunks}")
-    
-    # Transform documents
-    for doc in chunk_docs:
-        chunk_doc_refs.append(doc.reference)
-        rows_to_insert.append(transform_firestore_doc(doc))
-    
-    logger.info(f"Inserting {len(rows_to_insert)} rows for chunk {chunk_number}")
-    
-    # Insert to BigQuery
-    errors = bq_client.insert_rows_json(table_id, rows_to_insert)
-    if errors:
-        error_msg = f'Errors inserting rows in chunk {chunk_number}: {errors}'
-        logger.error(error_msg)
-        raise Exception(error_msg)
-    
-    logger.info(f"Successfully inserted {len(rows_to_insert)} rows")
-    
-    # Delete from Firestore
-    docs_deleted = delete_firestore_docs(db, chunk_doc_refs)
-    
-    logger.info(f"Completed chunk {chunk_number}. Inserted: {len(rows_to_insert)}, Deleted: {docs_deleted}")
-    return len(rows_to_insert), docs_deleted
 
 @scheduler_fn.on_schedule(
-    schedule="0 */6 * * *",  # Run every 6 hours
+    schedule="0 */2 * * *",  # Run every 2 hours
     memory=options.MemoryOption.GB_1,
     max_instances=3,
     timeout_sec=1800  # 30 minutes
@@ -239,6 +127,7 @@ def firestore_to_bigquery_etl(event: scheduler_fn.ScheduledEvent) -> str:
     Returns:
         str: Status message
     """
+    
     try:
         # Initialize clients
         db = firestore.Client()
