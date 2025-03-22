@@ -205,11 +205,20 @@ class RedditScraper:
     ) -> Tuple[RedditPost, List[RedditComment]]:
         """
         Fetches a specific post and recursively processes its comments.
+        Will retry up to 3 times with exponential backoff on connection errors.
         """
         try:
             self.logger.info(f"Fetching post {post_id} with comments (limit: {comment_limit})")
             await self.rate_limiter.wait()
-            submission = await self.api.reddit.submission(id=post_id)
+            
+            try:
+                submission = await self.api.reddit.submission(id=post_id)
+            except Exception as e:
+                error_msg = str(e)
+                error_type = type(e).__name__
+                self.logger.error(f"Network error when fetching submission {post_id}: {error_type} - {error_msg}", exc_info=True)
+                raise  # Let retry_with_backoff handle this
+            
             # Create the post object.
             post_obj = RedditPost(
                 id=submission.id,
@@ -225,15 +234,29 @@ class RedditScraper:
                 subreddit=submission.subreddit.display_name
             )
             await self.rate_limiter.wait()
+            
             # Replace "more comments" objects with a moderate limit.
             self.logger.info(f"Replacing 'more comments' objects for post {post_id}")
-            await submission.comments.replace_more(limit=50)
+            try:
+                await submission.comments.replace_more(limit=50)
+            except Exception as e:
+                error_msg = str(e)
+                error_type = type(e).__name__
+                self.logger.error(f"Error replacing 'more comments' for post {post_id}: {error_type} - {error_msg}", exc_info=True)
+                raise  # Let retry_with_backoff handle this
+                
             self.logger.info(f"Processing comments for post {post_id}")
             comments = await self.comment_processor.process_comments(submission.comments, limit=comment_limit)
             self.logger.info(f"Successfully processed {len(comments)} comments for post {post_id}")
             return post_obj, comments
         except Exception as e:
-            self.logger.error(f"Error fetching post with comments for {post_id}: {e}", exc_info=True)
+            error_msg = str(e)
+            error_type = type(e).__name__
+            # Specifically log connection reset errors
+            if "Connection reset by peer" in error_msg:
+                self.logger.error(f"Connection reset error for post {post_id}: {error_type} - {error_msg}", exc_info=True)
+            else:
+                self.logger.error(f"Error fetching post with comments for {post_id}: {error_type} - {error_msg}", exc_info=True)
             raise
 
     @retry_with_backoff(retries=3, base_delay=5, exceptions=(Exception,))

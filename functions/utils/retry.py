@@ -1,5 +1,6 @@
 import logging
 import time
+import asyncio
 from functools import wraps
 from typing import Optional, Type, Union, Tuple, Callable
 
@@ -29,7 +30,42 @@ def retry_with_backoff(
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
+            attempt = 0
+            
+            while True:
+                try:
+                    return await func(*args, **kwargs)
+                    
+                except exceptions as e:
+                    attempt += 1
+                    
+                    # Log more detailed information about the exception
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    
+                    if attempt >= retries:
+                        logger.error(
+                            f"RETRY FAILED: {func.__name__} failed after {retries} attempts. "
+                            f"Error type: {error_type}, Error: {error_msg}", 
+                            exc_info=True
+                        )
+                        raise  # Re-raise the last exception if we're out of retries
+                    
+                    # Calculate delay with exponential backoff
+                    delay = min(base_delay * (exponential_base ** (attempt - 1)), max_delay)
+                    
+                    logger.warning(
+                        f"RETRY ATTEMPT: {func.__name__} - Attempt {attempt}/{retries} failed. "
+                        f"Error type: {error_type}, Error: {error_msg}. "
+                        f"Retrying in {delay:.2f} seconds...",
+                        exc_info=True
+                    )
+                    
+                    await asyncio.sleep(delay)
+                    
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
             attempt = 0
             
             while True:
@@ -38,18 +74,35 @@ def retry_with_backoff(
                     
                 except exceptions as e:
                     attempt += 1
+                    
+                    # Log more detailed information about the exception
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    
                     if attempt >= retries:
-                        logger.error(f"Function {func.__name__} failed after {retries} attempts. Last error: {str(e)}")
+                        logger.error(
+                            f"RETRY FAILED: {func.__name__} failed after {retries} attempts. "
+                            f"Error type: {error_type}, Error: {error_msg}", 
+                            exc_info=True
+                        )
                         raise  # Re-raise the last exception if we're out of retries
                     
                     # Calculate delay with exponential backoff
                     delay = min(base_delay * (exponential_base ** (attempt - 1)), max_delay)
                     
                     logger.warning(
-                        f"Function {func.__name__} - Attempt {attempt}/{retries} failed: {str(e)}. "
-                        f"Retrying in {delay:.2f} seconds..."
+                        f"RETRY ATTEMPT: {func.__name__} - Attempt {attempt}/{retries} failed. "
+                        f"Error type: {error_type}, Error: {error_msg}. "
+                        f"Retrying in {delay:.2f} seconds...",
+                        exc_info=True
                     )
-                    time.sleep(delay)
                     
-        return wrapper
+                    time.sleep(delay)
+        
+        # Determine if the function is async or not
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return sync_wrapper
+                    
     return decorator 

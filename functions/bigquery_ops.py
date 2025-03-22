@@ -2,6 +2,8 @@ import logging
 from datetime import datetime
 from google.cloud import bigquery
 from google.cloud import firestore
+import time
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +59,24 @@ def create_temp_table(bq_client: bigquery.Client, source_table_id: str, temp_tab
         source_table_id: ID of the source table to copy schema from
         temp_table_id: ID of the temporary table to create
     """
-    temp_table = bigquery.Table(temp_table_id, schema=bq_client.get_table(source_table_id).schema)
-    bq_client.create_table(temp_table, exists_ok=True)
+    logger.info(f"Creating temporary table {temp_table_id}")
+    
+    # Get schema from source table
+    source_table = bq_client.get_table(source_table_id)
+    temp_table = bigquery.Table(temp_table_id, schema=source_table.schema)
+    
+    # Create the table
+    temp_table = bq_client.create_table(temp_table, exists_ok=True)
+    logger.info(f"Temporary table created: {temp_table_id}")
+    
+    # Verify table exists by getting it
+    try:
+        bq_client.get_table(temp_table_id)
+        logger.info(f"Verified temporary table {temp_table_id} exists and is ready")
+    except Exception as e:
+        error_msg = f"Failed to verify temporary table {temp_table_id} exists: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
 
 def filter_deleted_rows(rows: list) -> list:
     """Filter out rows where content is '[deleted]' and existing content is not '[deleted]'.
@@ -136,7 +154,7 @@ def delete_firestore_docs(db: firestore.Client, doc_refs: list, batch_size: int 
     
     return total_deleted
 
-def process_chunk(bq_client: bigquery.Client, db: firestore.Client, chunk_docs: list, table_id: str, chunk_number: int, total_chunks: int) -> tuple[int, int]:
+def process_chunk(bq_client: bigquery.Client, db: firestore.Client, chunk_docs: list, table_id: str, chunk_number: int, total_chunks: int) -> Tuple[int, int]:
     """Process a chunk of documents - transform, insert to BigQuery, and delete from Firestore.
     
     Args:
@@ -153,6 +171,8 @@ def process_chunk(bq_client: bigquery.Client, db: firestore.Client, chunk_docs: 
     chunk_doc_refs = []
     rows_to_insert = []
     temp_table_id = f"{table_id}_temp_{chunk_number}"
+    max_retries = 3
+    retry_delay = 2  # seconds
     
     logger.info(f"Processing chunk {chunk_number} of {total_chunks}")
     
@@ -174,9 +194,26 @@ def process_chunk(bq_client: bigquery.Client, db: firestore.Client, chunk_docs: 
             
         # Create and populate temporary table
         create_temp_table(bq_client, table_id, temp_table_id)
-        errors = bq_client.insert_rows_json(temp_table_id, filtered_rows)
-        if errors:
-            raise Exception(f'Error inserting rows to temp table: {errors}')
+        
+        # Retry logic for inserting rows
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempting to insert rows into temp table (attempt {attempt + 1}/{max_retries})")
+                errors = bq_client.insert_rows_json(temp_table_id, filtered_rows)
+                if not errors:
+                    logger.info("Successfully inserted rows into temp table")
+                    break
+                else:
+                    error_msg = f"Error inserting rows (attempt {attempt + 1}): {errors}"
+                    logger.warning(error_msg)
+                    if attempt == max_retries - 1:
+                        raise Exception(error_msg)
+                    time.sleep(retry_delay)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                logger.warning(f"Insert attempt {attempt + 1} failed: {str(e)}")
+                time.sleep(retry_delay)
         
         # Execute merge operation
         affected_rows = execute_merge_operation(bq_client, table_id, temp_table_id)
