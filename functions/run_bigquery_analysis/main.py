@@ -132,7 +132,7 @@ def run_analysis_queries(bq_client: bigquery.Client, dataset_id: str) -> dict:
                            for row in top_subreddits_results]
         results['top_subreddits'] = top_subreddits
         
-        # Get message count by day for the last 30 days
+        # Get message count by day for all available data
         daily_count_query = f"""
         SELECT
             CAST(created_at AS DATE) as date,
@@ -140,7 +140,9 @@ def run_analysis_queries(bq_client: bigquery.Client, dataset_id: str) -> dict:
         FROM
             `{PROJECT_ID}.{dataset_id}.raw_messages`
         WHERE
-            created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+            content IS NOT NULL
+            AND LENGTH(content) > 0
+            AND content != '[deleted]'
         GROUP BY
             date
         ORDER BY

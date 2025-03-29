@@ -17,9 +17,9 @@ async def extract_reddit_data_activity(last_run_time: Optional[datetime] = None)
         last_run_time: Timestamp of the last successful ETL run
         
     Returns:
-        List of dictionaries containing Reddit data
+        List of dictionaries containing deduplicated Reddit data
     """
-    logger.info("Starting extraction activity: Reddit data from BigQuery")
+    logger.info("Starting extraction activity: Reddit data from BigQuery (with deduplication)")
     
     extractor = BigQueryExtractor()
     df = extractor.get_reddit_data(last_run_time)
@@ -30,6 +30,6 @@ async def extract_reddit_data_activity(last_run_time: Optional[datetime] = None)
     
     # Convert DataFrame to list of dictionaries
     reddit_data = df.to_dict('records')
-    logger.info(f"Extracted {len(reddit_data)} Reddit posts/comments from BigQuery")
+    logger.info(f"Extracted {len(reddit_data)} deduplicated Reddit posts/comments from BigQuery")
     
     return reddit_data 

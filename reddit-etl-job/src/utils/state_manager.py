@@ -69,10 +69,9 @@ class StateManager:
             
         except Exception as e:
             logger.error(f"Error getting last run timestamp: {str(e)}", exc_info=True)
-            # Fall back to processing a default time range if state retrieval fails
-            one_week_ago = datetime.utcnow() - timedelta(days=7)
-            logger.info(f"Falling back to default timestamp: {one_week_ago}")
-            return one_week_ago
+            # Return None to process all data if state retrieval fails
+            logger.info("Error retrieving last run timestamp, will process all available data")
+            return None
     
     def update_run_timestamp(self, timestamp: Optional[datetime] = None):
         """

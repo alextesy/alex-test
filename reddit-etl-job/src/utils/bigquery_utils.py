@@ -5,6 +5,10 @@ from datetime import datetime
 
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
+from google.api_core.exceptions import NotFound as GoogleApiNotFound
+import sqlalchemy
+
+from src.utils.json_utils import safe_json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +210,11 @@ class BigQueryManager:
         new_mentions = []
         for mention in mentions:
             if not self.check_stock_mention_exists(mention['message_id'], mention['ticker']):
+                # Convert datetime objects to ISO format strings for JSON serialization
+                for key, value in mention.items():
+                    if isinstance(value, datetime):
+                        mention[key] = value.isoformat()
+                
                 # Convert signals to string if it's not already
                 if 'signals' in mention and mention['signals'] is not None:
                     if not isinstance(mention['signals'], str):
@@ -216,13 +225,20 @@ class BigQueryManager:
             logger.info("No new stock mentions to insert")
             return
         
-        # Insert records into BigQuery
-        errors = client.insert_rows_json(table_id, new_mentions)
-        
-        if errors:
-            logger.error(f"Errors inserting stock mentions: {errors}")
-        else:
-            logger.info(f"Successfully inserted {len(new_mentions)} stock mentions to BigQuery")
+        try:
+            # Insert records into BigQuery
+            errors = client.insert_rows_json(table_id, new_mentions)
+            
+            if errors:
+                logger.error(f"Errors inserting stock mentions: {errors}")
+            else:
+                logger.info(f"Successfully inserted {len(new_mentions)} stock mentions to BigQuery")
+        except Exception as e:
+            logger.error(f"Error inserting stock mentions into BigQuery: {str(e)}")
+            # Log the first record for debugging
+            if new_mentions:
+                logger.error(f"Sample record causing error: {new_mentions[0]}")
+            raise
 
 
 class BaseBigQueryManager(Generic[T]):
@@ -279,6 +295,45 @@ class BaseBigQueryManager(Generic[T]):
             return dict(row.items())
         
         return None
+    
+    def query_with_deduplicated_messages(self, source_table: str, conditions: str = None) -> List[Dict[str, Any]]:
+        """
+        Query data from a source table with deduplication based on message_id.
+        This is useful when joining with message tables that might have duplicates.
+        
+        Args:
+            source_table: Name of the source table (e.g., "raw_messages")
+            conditions: Additional SQL WHERE conditions
+            
+        Returns:
+            List[Dict[str, Any]]: List of records with deduplicated messages
+        """
+        where_clause = f"WHERE {conditions}" if conditions else ""
+        
+        query = f"""
+        WITH DedupMessages AS (
+            SELECT 
+                *,
+                ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY etl_timestamp DESC) as row_num
+            FROM 
+                `{self.project_id}.{self.dataset_id}.{source_table}`
+        )
+        SELECT t.*
+        FROM `{self.project_id}.{self.dataset_id}.{self.table_name}` t
+        JOIN DedupMessages d ON t.message_id = d.message_id
+        WHERE d.row_num = 1
+        {where_clause}
+        """
+        
+        logger.info(f"Executing query to fetch data from {self.table_name} with deduplicated messages from {source_table}")
+        query_job = self.client.query(query)
+        
+        results = []
+        for row in query_job:
+            results.append(dict(row.items()))
+        
+        logger.info(f"Retrieved {len(results)} records with deduplicated messages")
+        return results
     
     def insert_or_update_records(self, records: List[Dict[str, Any]]) -> int:
         """

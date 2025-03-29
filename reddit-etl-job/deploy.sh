@@ -80,6 +80,12 @@ gcloud projects add-iam-policy-binding ${GOOGLE_CLOUD_PROJECT_ID} \
   --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
   --role="roles/bigquery.dataOwner"
 
+# Permission to run BigQuery jobs (important for job creation)
+echo "Adding BigQuery job user role..."
+gcloud projects add-iam-policy-binding ${GOOGLE_CLOUD_PROJECT_ID} \
+  --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role="roles/bigquery.jobUser"
+
 # Deploy the worker as a Cloud Run job (not a service)
 echo "Deploying as Cloud Run job..."
 gcloud run jobs create $CLOUD_RUN_SERVICE_NAME \

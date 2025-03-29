@@ -44,19 +44,38 @@ class BigQueryExtractor:
         """
         logger.info("Fetching Reddit data from BigQuery for stock analysis")
         
-        # Default time filter for the query
-        time_filter = "AND created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
-        
         # If we have a last run timestamp, only get data since then
         if last_run_time:
             formatted_timestamp = last_run_time.strftime('%Y-%m-%d %H:%M:%S')
             time_filter = f"AND created_at > TIMESTAMP('{formatted_timestamp}')"
             logger.info(f"Fetching Reddit data created after: {formatted_timestamp}")
         else:
-            logger.info("Fetching Reddit data from the last 7 days (default)")
+            # Process the entire table for the initial run
+            time_filter = ""
+            logger.info("Initial run: Fetching all Reddit data from BigQuery (no time filter)")
         
-        # Get data based on time filter
+        # Get data based on time filter with deduplication logic
         query = f"""
+        WITH RankedMessages AS (
+            SELECT
+                message_id,
+                content,
+                author,
+                created_at,
+                subreddit,
+                title,
+                url,
+                score,
+                message_type,
+                ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY created_at DESC, etl_timestamp DESC) as row_num
+            FROM
+                `{self.project_id}.{self.dataset_id}.{self.raw_table_id}`
+            WHERE
+                content IS NOT NULL
+                AND LENGTH(content) > 0
+                AND content != '[deleted]'
+                {time_filter}
+        )
         SELECT
             message_id,
             content,
@@ -68,12 +87,9 @@ class BigQueryExtractor:
             score,
             message_type
         FROM
-            `{self.project_id}.{self.dataset_id}.{self.raw_table_id}`
+            RankedMessages
         WHERE
-            content IS NOT NULL
-            AND LENGTH(content) > 0
-            AND content != '[deleted]'
-            {time_filter}
+            row_num = 1
         ORDER BY
             created_at DESC
         """
@@ -85,7 +101,7 @@ class BigQueryExtractor:
             logger.warning("No new Reddit data found in BigQuery")
             return pd.DataFrame()
         
-        logger.info(f"Retrieved {len(rows)} Reddit posts/comments from BigQuery")
+        logger.info(f"Retrieved {len(rows)} deduplicated Reddit posts/comments from BigQuery")
         
         # Convert to DataFrame
         df = pd.DataFrame(rows)
