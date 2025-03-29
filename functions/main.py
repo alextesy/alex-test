@@ -6,9 +6,8 @@ from dotenv import load_dotenv
 from firebase_admin import initialize_app, credentials, _apps
 from firebase_functions import scheduler_fn, options
 import google.cloud.logging
-from google.cloud import firestore, bigquery
-from bigquery_ops import process_chunk
-from firestore_ops import scrape_reddit
+from google.cloud import firestore
+from bigquery_ops import scrape_reddit_to_bigquery
 
 # Load environment variables first
 load_dotenv()
@@ -71,7 +70,7 @@ def run_scraper_scheduler(event: scheduler_fn.ScheduledEvent) -> str:
                 # Run the scraper with timeout
                 try:
                     # Create a task for the scraper
-                    scraper_task = asyncio.ensure_future(scrape_reddit(db, limit=10000))
+                    scraper_task = asyncio.ensure_future(scrape_reddit_to_bigquery(limit=10000))
                     
                     # Run the task with a timeout
                     result = loop.run_until_complete(asyncio.wait_for(scraper_task, timeout))
@@ -105,83 +104,3 @@ def run_scraper_scheduler(event: scheduler_fn.ScheduledEvent) -> str:
         error_msg = f"Scheduled scraping error: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return error_msg
-
-
-@scheduler_fn.on_schedule(
-    schedule="0 */2 * * *",  # Run every 2 hours
-    memory=options.MemoryOption.GB_1,
-    max_instances=3,
-    timeout_sec=1800  # 30 minutes
-)
-def firestore_to_bigquery_etl(event: scheduler_fn.ScheduledEvent) -> str:
-    """Cloud Function triggered hourly to dump all Firestore stock data to BigQuery and delete from Firestore.
-    
-    This function performs a complete ETL process:
-    1. Extracts all data from Firestore
-    2. Transforms it to fit BigQuery schema
-    3. Loads it into BigQuery in chunks
-    4. Deletes the processed data from Firestore in chunks
-    
-    Args:
-        event (ScheduledEvent): The event that triggered this function.
-    Returns:
-        str: Status message
-    """
-    
-    try:
-        # Initialize clients
-        db = firestore.Client()
-        bq_client = bigquery.Client()
-        
-        logger.info("Fetching all data from Firestore collection")
-        
-        # Query Firestore for all data
-        collection_ref = db.collection(STOCK_DATA_COLLECTION)
-        docs = list(collection_ref.stream())
-        total_docs = len(docs)
-        logger.info(f"Found {total_docs} documents to process")
-        
-        if total_docs == 0:
-            logger.info('No data to insert')
-            return 'No data to insert'
-
-        # Get project ID from environment
-        project_id = os.getenv('PROJECT_ID')
-        if not project_id:
-            raise ValueError("PROJECT_ID environment variable is not set")
-            
-        # Define table reference
-        dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'reddit_data')
-        table_id = f"{project_id}.{dataset_id}.raw_messages"
-        
-        # Process in chunks
-        chunk_size = 500  # Match Firestore's batch limit
-        total_inserted = 0
-        total_deleted = 0
-        total_chunks = (total_docs + chunk_size - 1) // chunk_size
-        
-        for i in range(0, total_docs, chunk_size):
-            chunk_docs = docs[i:i + chunk_size]
-            chunk_number = i // chunk_size + 1
-            
-            # Process the chunk
-            inserted, deleted = process_chunk(
-                bq_client=bq_client,
-                db=db,
-                chunk_docs=chunk_docs,
-                table_id=table_id,
-                chunk_number=chunk_number,
-                total_chunks=total_chunks
-            )
-            
-            total_inserted += inserted
-            total_deleted += deleted
-            
-        success_msg = f'Successfully inserted {total_inserted} rows to BigQuery and deleted {total_deleted} documents from Firestore'
-        logger.info(success_msg)
-        return success_msg
-        
-    except Exception as e:
-        error_msg = f'Error in firestore_to_bigquery_etl: {str(e)}'
-        logger.error(error_msg, exc_info=True)
-        raise 

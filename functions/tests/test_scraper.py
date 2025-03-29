@@ -136,7 +136,7 @@ async def test_scrape_reddit(mock_firestore):
     print("\nStarting Reddit scraper test...")
     
     # Create a direct instance of RedditScraper to test its functionality
-    from scrapers.reddit_scraper import RedditScraper
+    from scrapers.reddit_scraper_v2 import RedditScraper
     
     async with RedditScraper() as reddit_scraper:
         # Test getting posts from a subreddit directly
@@ -171,7 +171,7 @@ async def test_get_post_with_comments():
     """Test get_post_with_comments functionality with different comment limits"""
     print("\nStarting get_post_with_comments test...")
 
-    from scrapers.reddit_scraper import RedditScraper
+    from scrapers.reddit_scraper_v2 import RedditScraper
     
     async with RedditScraper() as reddit_scraper:
         # First, get a regular post from r/stocks with moderate number of comments
@@ -244,7 +244,7 @@ async def test_get_new_comments():
     """Test get_new_comments functionality by comparing comments before and after a timestamp"""
     print("\nStarting get_new_comments test...")
 
-    from scrapers.reddit_scraper import RedditScraper
+    from scrapers.reddit_scraper_v2 import RedditScraper
     
     async with RedditScraper() as reddit_scraper:
         # Try multiple subreddits in case one doesn't have suitable posts

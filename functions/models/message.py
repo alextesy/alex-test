@@ -2,9 +2,6 @@ from abc import ABC
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Set
-from sqlalchemy.orm import Session
-from .database_models import ProcessedMessage, DBStock, MessageType
-from .stock import Stock
 
 @dataclass
 class Message(ABC):
@@ -16,58 +13,10 @@ class Message(ABC):
     url: str
     score: int
     created_at: datetime = field(default_factory=datetime.utcnow)
-    mentioned_stocks: Set[Stock] = field(default_factory=set)
     sentiment: float = 0.0
-    message_type: MessageType = field(init=False)  # Will be set by child classes
+    message_type: str = field(init=False)  # Will be set by child classes
     
-    def to_db_model(self, db: Session) -> ProcessedMessage:
-        """Convert to database model"""
-        db_message = ProcessedMessage(
-            id=self.id,
-            content=self.content,
-            author=self.author,
-            timestamp=self.timestamp,
-            created_at=self.created_at,
-            url=self.url,
-            score=self.score,
-            sentiment=self.sentiment,
-            message_type=self.message_type
-        )
-        
-        # Add platform-specific fields
-        if isinstance(self, Tweet):
-            db_message.retweet_count = self.retweet_count
-            db_message.favorite_count = self.favorite_count
-        elif isinstance(self, RedditPost):
-            db_message.title = self.title
-            db_message.selftext = self.selftext
-            db_message.num_comments = self.num_comments
-            db_message.subreddit = self.subreddit
-            
-        # Link stocks
-        for stock in self.mentioned_stocks:
-            db_stock = db.query(Stock).filter(Stock.symbol == stock.symbol).first()
-            if not db_stock:
-                db_stock = stock.to_db_model(db)
-                db.add(db_stock)
-            db_message.stocks.append(db_stock)
-            
-        return db_message
-
-@dataclass
-class Tweet(Message):
-    """Twitter message model"""
-    title: str = ''  # Twitter doesn't have titles
-    retweet_count: int = 0    # Added default value
-    favorite_count: int = 0    # Added default value
-    
-    def __post_init__(self):
-        self.message_type = MessageType.TWEET
-    
-    @property
-    def comments_count(self) -> int:
-        """Alias for retweet_count to maintain consistency with other platforms"""
-        return self.retweet_count
+    # Simplified base class without database conversion methods
 
 @dataclass
 class RedditPost(Message):
@@ -76,9 +25,10 @@ class RedditPost(Message):
     selftext: str = ''
     num_comments: int = 0
     subreddit: str = ''
-    
+    submission_id: str = ''
+
     def __post_init__(self):
-        self.message_type = MessageType.REDDIT_POST
+        self.message_type = "REDDIT_POST"
     
     @property
     def comments_count(self) -> int:
@@ -93,19 +43,12 @@ class RedditComment(RedditPost):
     title: str = None   # Comments don't have titles
     
     def __post_init__(self):
-        self.message_type = MessageType.REDDIT_COMMENT
+        self.message_type = "REDDIT_COMMENT"
     
     @property
     def comments_count(self) -> int:
         """Number of replies to this comment"""
         return self.num_comments
-
-    def to_db_model(self, db: Session) -> ProcessedMessage:
-        """Convert to database model with comment-specific fields"""
-        db_message = super().to_db_model(db)
-        db_message.parent_id = self.parent_id
-        db_message.depth = self.depth
-        return db_message
 
 @dataclass
 class CNBCArticle(Message):
@@ -116,18 +59,9 @@ class CNBCArticle(Message):
     author_title: str = ''  # Author's title/position at CNBC
     
     def __post_init__(self):
-        self.message_type = MessageType.CNBC_ARTICLE
+        self.message_type = "CNBC_ARTICLE"
     
     @property
     def comments_count(self) -> int:
         """CNBC articles don't have comments in our system"""
         return 0
-
-    def to_db_model(self, db: Session) -> ProcessedMessage:
-        """Convert to database model with CNBC-specific fields"""
-        db_message = super().to_db_model(db)
-        db_message.title = self.title
-        db_message.summary = self.summary
-        db_message.category = self.category
-        db_message.author_title = self.author_title
-        return db_message

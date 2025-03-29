@@ -1,0 +1,181 @@
+main:
+  params: [input]
+  steps:
+    - init:
+        assign:
+          - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: ${sys.get_env("GOOGLE_CLOUD_REGION", "us-central1")}
+          - dataset_id: "reddit_data"
+          - limit: 10000  # Number of posts to process
+
+    - log_start:
+        call: sys.log
+        args:
+          severity: INFO
+          text: "Starting Reddit scraping and processing workflow"
+
+    # Step 1: Call existing Cloud Function (Reddit scraper with BigQuery ingestion)
+    - call_existing_function:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/run_scraper_scheduler"}
+            auth:
+              type: OIDC
+          result: function_result
+        except:
+          as: e
+          steps:
+            - log_function_error:
+                call: sys.log
+                args:
+                  severity: ERROR
+                  text: ${"Existing Cloud Function failed: " + json.encode(e)}
+            - return_error:
+                return: ${"Cloud Function error: " + json.encode(e)}
+
+    - log_function_result:
+        call: sys.log
+        args:
+          severity: INFO
+          text: ${"Existing cloud function completed. Result: " + json.encode(function_result.body)}
+
+    # Step 1.5: Run deduplication on raw_messages table
+    - run_deduplication:
+        try:
+          call: googleapis.bigquery.v2.jobs.insert
+          args:
+            projectId: ${project_id}
+            body:
+              configuration:
+                query:
+                  query: ${"-- Create a temporary table with deduplicated data\nCREATE OR REPLACE TABLE `" + project_id + "." + dataset_id + ".raw_messages_deduped` AS\nWITH ranked_messages AS (\n  SELECT\n    *,\n    ROW_NUMBER() OVER (\n      PARTITION BY message_id\n      ORDER BY ingestion_timestamp DESC\n    ) as row_num\n  FROM\n    `" + project_id + "." + dataset_id + ".raw_messages`\n)\nSELECT\n  * EXCEPT(row_num)\nFROM\n  ranked_messages\nWHERE\n  row_num = 1;\n\n-- Backup original table\nCREATE OR REPLACE TABLE `" + project_id + "." + dataset_id + ".raw_messages_backup` AS\nSELECT * FROM `" + project_id + "." + dataset_id + ".raw_messages`;\n\n-- Replace original table with deduplicated data\nTRUNCATE TABLE `" + project_id + "." + dataset_id + ".raw_messages`;\n\nINSERT INTO `" + project_id + "." + dataset_id + ".raw_messages`\nSELECT * FROM `" + project_id + "." + dataset_id + ".raw_messages_deduped`;\n"}
+                  useLegacySql: false
+          result: deduplication_result
+        except:
+          as: e
+          steps:
+            - log_dedup_error:
+                call: sys.log
+                args:
+                  severity: ERROR
+                  text: ${"Deduplication failed: " + json.encode(e)}
+            - return_error:
+                return: ${"Deduplication error: " + json.encode(e)}
+
+    - log_deduplication_result:
+        call: sys.log
+        args:
+          severity: INFO
+          text: "BigQuery deduplication completed successfully"
+
+    # Step 2: Run BigQuery SQL transformations
+    - run_bigquery_transformations:
+        try:
+          call: googleapis.bigquery.v2.jobs.insert
+          args:
+            projectId: ${project_id}
+            body:
+              configuration:
+                query:
+                  query: ${"WITH sentiment_data AS (\n  SELECT\n    message_id,\n    content,\n    author,\n    created_at,\n    subreddit,\n    CASE\n      WHEN LOWER(content) LIKE '%bullish%' OR LOWER(content) LIKE '%buy%' OR LOWER(content) LIKE '%up%' THEN 1\n      WHEN LOWER(content) LIKE '%bearish%' OR LOWER(content) LIKE '%sell%' OR LOWER(content) LIKE '%down%' THEN -1\n      ELSE 0\n    END AS sentiment_score\n  FROM\n    `" + project_id + "." + dataset_id + ".raw_messages`\n  WHERE\n    content IS NOT NULL\n    AND LENGTH(content) > 0\n    AND content != '[deleted]'\n    AND created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)\n)\nSELECT\n  subreddit,\n  COUNT(*) AS message_count,\n  AVG(sentiment_score) AS avg_sentiment,\n  CURRENT_TIMESTAMP() AS analysis_timestamp\nFROM\n  sentiment_data\nGROUP BY\n  subreddit\nHAVING\n  COUNT(*) > 10\nORDER BY\n  message_count DESC\n"}
+                  useLegacySql: false
+                  destinationTable:
+                    projectId: ${project_id}
+                    datasetId: ${dataset_id}
+                    tableId: "sentiment_by_subreddit"
+                  writeDisposition: "WRITE_TRUNCATE"
+          result: bq_transformation_result
+        except:
+          as: e
+          steps:
+            - log_bq_error:
+                call: sys.log
+                args:
+                  severity: ERROR
+                  text: ${"BigQuery transformation failed: " + json.encode(e)}
+            - return_error:
+                return: ${"BigQuery transformation error: " + json.encode(e)}
+
+    - log_bq_transformation_result:
+        call: sys.log
+        args:
+          severity: INFO
+          text: "BigQuery transformations completed successfully"
+
+    # Step 3: Run Stock ETL Job to extract stock information from Reddit posts
+    - run_stock_etl_job:
+        try:
+          call: googleapis.run.v2.jobs.run
+          args:
+            name: ${"projects/" + project_id + "/locations/" + region + "/jobs/reddit-stock-etl-job"}
+            body:
+              overrides:
+                containerOverrides:
+                  - name: "reddit-stock-etl"
+                    env:
+                      - name: "GOOGLE_CLOUD_PROJECT_ID"
+                        value: ${project_id}
+                      - name: "BIGQUERY_DATASET"
+                        value: ${dataset_id}
+          result: stock_etl_job_result
+        except:
+          as: e
+          steps:
+            - log_stock_etl_error:
+                call: sys.log
+                args:
+                  severity: ERROR
+                  text: ${"Stock ETL Job failed: " + json.encode(e)}
+            - return_error:
+                return: ${"Stock ETL Job error: " + json.encode(e)}
+
+    - log_stock_etl_result:
+        call: sys.log
+        args:
+          severity: INFO
+          text: ${"Stock ETL Job completed. Result: " + json.encode(stock_etl_job_result)}
+
+    # Step 4: Run Cloud Run Job for ETL to PostgreSQL (Sentiment by Subreddit)
+    - run_cloud_run_job:
+        try:
+          call: googleapis.run.v2.jobs.run
+          args:
+            name: ${"projects/" + project_id + "/locations/" + region + "/jobs/reddit-etl-job"}
+            body:
+              overrides:
+                containerOverrides:
+                  - name: "reddit-etl"
+                    env:
+                      - name: "BIGQUERY_DATASET"
+                        value: ${dataset_id}
+                      - name: "BIGQUERY_TABLE"
+                        value: "sentiment_by_subreddit"
+          result: cloud_run_job_result
+        except:
+          as: e
+          steps:
+            - log_run_job_error:
+                call: sys.log
+                args:
+                  severity: ERROR
+                  text: ${"Cloud Run Job failed: " + json.encode(e)}
+            - return_error:
+                return: ${"Cloud Run Job error: " + json.encode(e)}
+
+    - log_cloud_run_job_result:
+        call: sys.log
+        args:
+          severity: INFO
+          text: ${"Cloud Run Job completed. Result: " + json.encode(cloud_run_job_result)}
+
+    # Final step: Return workflow results
+    - return_result:
+        return:
+          status: "success"
+          function_result: ${function_result.body}
+          deduplication_completed: true
+          bq_transformation_completed: true
+          stock_etl_completed: true
+          cloud_run_job_completed: true
+          timestamp: ${sys.now()} 

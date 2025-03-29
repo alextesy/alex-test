@@ -1,0 +1,20 @@
+name: projects/PROJECT_ID/locations/LOCATION/jobs/reddit-workflow-trigger
+description: "Trigger Reddit data workflow every 2 hours"
+schedule: "0 */2 * * *"
+timeZone: "UTC"
+attemptDeadline: "1800s"
+retryConfig:
+  retryCount: 3
+  maxRetryDuration: "3600s"
+  minBackoffDuration: "30s"
+  maxBackoffDuration: "300s"
+  maxDoublings: 3
+httpTarget:
+  uri: "https://workflowexecutions.googleapis.com/v1/projects/PROJECT_ID/locations/LOCATION/workflows/reddit-data-workflow/executions"
+  httpMethod: POST
+  body: "{}"
+  headers:
+    Content-Type: "application/json"
+  oauthToken:
+    serviceAccountEmail: "workflow-runner@PROJECT_ID.iam.gserviceaccount.com"
+    scope: "https://www.googleapis.com/auth/cloud-platform" 

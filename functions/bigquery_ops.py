@@ -1,11 +1,21 @@
+import os
 import logging
-from datetime import datetime
-from google.cloud import bigquery
-from google.cloud import firestore
 import time
 from typing import Tuple
+from datetime import datetime
+import asyncio
+from google.cloud import bigquery
+from google.cloud import firestore
+from scrapers.reddit_scraper_v2 import RedditScraper
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ID = os.getenv('PROJECT_ID')
+DATASET_ID = os.getenv('BIGQUERY_DATASET_ID', 'reddit_data')
+SCRAPER_STATE_COLLECTION = os.getenv('FIRESTORE_SCRAPER_STATE_COLLECTION', 'scraper_state')
+
+TABLE_ID = f"{PROJECT_ID}.{DATASET_ID}.raw_messages"
+
 
 def convert_timestamp(timestamp) -> datetime:
     """Convert various timestamp formats to datetime object."""
@@ -47,6 +57,7 @@ def transform_firestore_doc(doc: firestore.DocumentSnapshot) -> dict:
         'num_comments': data.get('num_comments'),
         'subreddit': data.get('subreddit'),
         'parent_id': data.get('parent_id'),
+        'submission_id': data.get('submission_id'),
         'depth': data.get('depth'),
         'ingestion_timestamp': datetime.utcnow().isoformat()
     }
@@ -232,3 +243,77 @@ def process_chunk(bq_client: bigquery.Client, db: firestore.Client, chunk_docs: 
     finally:
         # Clean up temporary table
         bq_client.delete_table(temp_table_id, not_found_ok=True) 
+
+
+async def scrape_reddit_to_bigquery(limit=None):
+    logger.info("Starting Reddit scraping to BigQuery")
+    total_inserted = 0
+
+    bq_client = bigquery.Client()
+    db = firestore.AsyncClient(project=PROJECT_ID)
+
+    state_ref = db.collection(SCRAPER_STATE_COLLECTION).document('reddit')
+    state_doc = await state_ref.get()
+
+    last_discussion_id = state_doc.get('last_daily_discussion_id') if state_doc.exists else None
+    last_check_time = None
+
+    if state_doc.exists:
+        last_updated = state_doc.get('last_updated')
+        if last_updated:
+            last_check_time = last_updated.timestamp()
+
+    async with RedditScraper() as reddit_scraper:
+        daily_post, daily_comments = await reddit_scraper.fetch_daily_discussion(
+            limit=limit,
+            last_discussion_id=last_discussion_id,
+            last_check_time=last_check_time
+        )
+
+        if daily_post:
+            if await store_message_in_bigquery(daily_post, bq_client, TABLE_ID):
+                total_inserted += 1
+
+            tasks = [
+                store_message_in_bigquery(comment, bq_client, TABLE_ID)
+                for comment in daily_comments
+            ]
+            results = await asyncio.gather(*tasks)
+            total_inserted += sum(results)
+
+            # Update the scraper state
+            await state_ref.set({
+                'last_daily_discussion_id': daily_post.id,
+                'last_updated': datetime.utcnow()
+            })
+
+    logger.info(f"Scraping complete: inserted {total_inserted} messages into BigQuery, scraper state updated.")
+    return total_inserted
+
+
+async def store_message_in_bigquery(message, bq_client, table_id):
+    row = {
+        'message_id': message.id,
+        'content': message.content,
+        'author': message.author,
+        'timestamp': convert_timestamp(message.timestamp).isoformat() if convert_timestamp(message.timestamp) else None,
+        'url': message.url,
+        'score': message.score,
+        'created_at': convert_timestamp(message.created_at).isoformat() if convert_timestamp(message.created_at) else None,
+        'message_type': message.message_type,
+        'source': 'reddit',
+        'title': getattr(message, 'title', None),
+        'selftext': getattr(message, 'selftext', None),
+        'num_comments': getattr(message, 'num_comments', None),
+        'subreddit': getattr(message, 'subreddit', None),
+        'parent_id': getattr(message, 'parent_id', None),
+        'submission_id': getattr(message, 'submission_id', None),
+        'depth': getattr(message, 'depth', None),
+        'ingestion_timestamp': datetime.utcnow().isoformat()
+    }
+    errors = bq_client.insert_rows_json(table_id, [row],)
+    if errors:
+        logger.error(f"BigQuery insertion errors for {message.id}: {errors}")
+        return False
+    logger.debug(f"Inserted message {message.id} into BigQuery")
+    return True

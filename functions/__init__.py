@@ -2,4 +2,4 @@
 # Firebase Functions will automatically discover functions in main.py
 
 # Firebase Functions v2 needs proper exports
-from .main import run_scraper_scheduler, firestore_to_bigquery_etl
+from .main import run_scraper_scheduler

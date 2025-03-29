@@ -1,0 +1,12 @@
+google-cloud-bigquery>=3.3.0
+psycopg2-binary>=2.9.5
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
+nltk>=3.8.1
+spacy>=3.7.2
+pandas>=2.0.0
+transformers>=4.35.0
+yfinance>=0.2.33
+finbert-embedding>=0.1.5
+temporalio>=1.4.0
+google-cloud-firestore>=2.13.1 

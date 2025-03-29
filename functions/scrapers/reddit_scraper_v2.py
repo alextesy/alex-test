@@ -101,6 +101,7 @@ class CommentProcessor:
                 url=f"https://reddit.com{comment.permalink}",
                 score=comment.score,
                 parent_id=comment.parent_id,
+                submission_id=comment.submission.id,
                 depth=depth,
                 subreddit=comment.subreddit.display_name
             )
