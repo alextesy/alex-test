@@ -18,13 +18,15 @@ class BaseAggregator(Generic[R]):
     Base class for all aggregators that process stock mentions.
     """
     
-    def __init__(self, db_engine: Engine):
+    def __init__(self, db_engine=None):
         """
         Initialize the aggregator.
         
         Args:
-            db_engine: SQLAlchemy database engine
+            db_engine: Optional SQLAlchemy database engine (not used)
         """
+        # We're not using the database engine, but keeping the parameter
+        # for compatibility with existing code
         self.db_engine = db_engine
     
     def aggregate(self, mentions: List[StockMention], incremental: bool = True) -> List[R]:
@@ -134,7 +136,11 @@ class BaseAggregator(Generic[R]):
         # Calculate weighted sentiment (weighted by confidence)
         if 'confidence' in group.columns and not group['confidence'].isna().all():
             weights = group['confidence']
-            weighted_sentiment = np.average(group['sentiment_compound'], weights=weights)
+            if weights.sum() > 0:
+                weighted_sentiment = np.average(group['sentiment_compound'], weights=weights)
+            else:
+                # If all weights are zero, fall back to simple average
+                weighted_sentiment = avg_sentiment
         else:
             weighted_sentiment = avg_sentiment
         

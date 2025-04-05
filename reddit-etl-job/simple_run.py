@@ -74,6 +74,7 @@ def main():
             save_hourly_summaries_activity,
             save_weekly_summaries_activity
         )
+        from src.activities.state_activities import get_last_run_activity, update_run_timestamp_activity
 
         # Set up BigQuery
         from src.utils.bigquery_utils import BigQueryManager
@@ -87,9 +88,11 @@ def main():
         # Run the ETL process directly
         logger.info(f"Extracting data from {start_time} to {end_time}")
         
-        # Extract data - note that we call this with None instead of start_time, end_time
-        # as the function gets the time window internally
-        reddit_data = run_async_activity(extract_reddit_data_activity, None)
+        # Get the last run timestamp
+        last_run_time = run_async_activity(get_last_run_activity)
+        
+        # Extract data with proper time filtering
+        reddit_data = run_async_activity(extract_reddit_data_activity, last_run_time)
         logger.info(f"Extracted {len(reddit_data)} Reddit posts/comments")
         
         # Analyze data
@@ -103,29 +106,27 @@ def main():
         # Aggregate data
         daily_summaries = run_async_activity(
             aggregate_daily_summaries_activity, 
-            stock_mentions, 
-            start_time, 
-            end_time
+            stock_mentions
         )
         
         hourly_summaries = run_async_activity(
             aggregate_hourly_summaries_activity,
-            stock_mentions,
-            start_time,
-            end_time
+            stock_mentions
         )
         
         weekly_summaries = run_async_activity(
             aggregate_weekly_summaries_activity, 
-            stock_mentions, 
-            start_time, 
-            end_time
+            stock_mentions
         )
         
         # Save aggregated data
         daily_result = run_async_activity(save_daily_summaries_activity, daily_summaries)
         hourly_result = run_async_activity(save_hourly_summaries_activity, hourly_summaries)
         weekly_result = run_async_activity(save_weekly_summaries_activity, weekly_summaries)
+        
+        # Update the timestamp for the next run
+        run_async_activity(update_run_timestamp_activity, end_time)
+        logger.info(f"Updated last run timestamp to: {end_time}")
         
         logger.info(f"Saved {daily_result} daily summaries, {hourly_result} hourly summaries, and {weekly_result} weekly summaries")
         logger.info("ETL job completed successfully")

@@ -16,6 +16,16 @@ class WeeklyAggregator(BaseAggregator[WeeklySummary]):
     Aggregates stock mentions by week.
     """
     
+    def __init__(self, db_engine=None):
+        """
+        Initialize the weekly aggregator.
+        
+        Args:
+            db_engine: Optional SQLAlchemy database engine (not used)
+        """
+        # Call the base class constructor
+        super().__init__(db_engine)
+        
     def _add_time_columns(self, df: pd.DataFrame) -> None:
         """
         Add week column for weekly grouping.
@@ -99,49 +109,10 @@ class WeeklyAggregator(BaseAggregator[WeeklySummary]):
         if not summaries:
             return []
             
-        updated_summaries = []
-        
-        with self.db_engine.connect() as connection:
-            for summary in summaries:
-                week_str = summary.week_start.strftime('%Y-%m-%d')
-                
-                # Check if summary already exists
-                query = f"""
-                SELECT id, mention_count, buy_signals, sell_signals, hold_signals, 
-                       news_signals, earnings_signals, technical_signals, options_signals,
-                       price_targets, daily_breakdown, subreddits
-                FROM stock_weekly_summary 
-                WHERE ticker = '{summary.ticker}' AND week_start::date = '{week_str}'::date
-                """
-                
-                result = connection.execute(query).fetchone()
-                
-                if result:
-                    # Get existing summary data
-                    existing_id = result[0]
-                    existing_data = {
-                        'mention_count': result[1],
-                        'buy_signals': result[2],
-                        'sell_signals': result[3],
-                        'hold_signals': result[4],
-                        'news_signals': result[5],
-                        'earnings_signals': result[6],
-                        'technical_signals': result[7],
-                        'options_signals': result[8],
-                        'price_targets': result[9],
-                        'daily_breakdown': result[10],
-                        'subreddits': result[11]
-                    }
-                    
-                    # Merge with new summary
-                    merged_summary = self._merge_summaries(summary, existing_data)
-                    merged_summary.id = existing_id  # Store ID for updating
-                    updated_summaries.append(merged_summary)
-                else:
-                    # No existing summary, use as is
-                    updated_summaries.append(summary)
-        
-        return updated_summaries
+        # Skip database merge since we're using BigQuery for storage
+        # and don't have a PostgreSQL database configured
+        logger.info("Skipping database merge - using direct BigQuery storage instead")
+        return summaries
     
     def _merge_summaries(self, summary: WeeklySummary, existing_data: Dict[str, Any]) -> WeeklySummary:
         """

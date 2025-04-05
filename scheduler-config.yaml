@@ -5,7 +5,7 @@ timeZone: "UTC"
 attemptDeadline: "1800s"
 retryConfig:
   retryCount: 3
-  maxRetryDuration: "3600s"
+  maxRetryDuration: "7200s"
   minBackoffDuration: "30s"
   maxBackoffDuration: "300s"
   maxDoublings: 3

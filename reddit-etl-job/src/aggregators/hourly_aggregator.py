@@ -16,6 +16,16 @@ class HourlyAggregator(BaseAggregator[HourlySummary]):
     Aggregates stock mentions by hour.
     """
     
+    def __init__(self, db_engine=None):
+        """
+        Initialize the hourly aggregator.
+        
+        Args:
+            db_engine: Optional SQLAlchemy database engine (not used)
+        """
+        # Call the base class constructor
+        super().__init__(db_engine)
+    
     def _add_time_columns(self, df: pd.DataFrame) -> None:
         """
         Add hour column for hourly grouping.
@@ -83,41 +93,10 @@ class HourlyAggregator(BaseAggregator[HourlySummary]):
         if not summaries:
             return []
             
-        updated_summaries = []
-        
-        with self.db_engine.connect() as connection:
-            for summary in summaries:
-                hour_str = summary.hour_start.strftime('%Y-%m-%d %H:00:00')
-                
-                # Check if summary already exists
-                query = f"""
-                SELECT id, mention_count, buy_signals, sell_signals, hold_signals, subreddits
-                FROM stock_hourly_summary 
-                WHERE ticker = '{summary.ticker}' AND hour_start = '{hour_str}'::timestamp
-                """
-                
-                result = connection.execute(query).fetchone()
-                
-                if result:
-                    # Get existing summary data
-                    existing_id = result[0]
-                    existing_data = {
-                        'mention_count': result[1],
-                        'buy_signals': result[2],
-                        'sell_signals': result[3],
-                        'hold_signals': result[4],
-                        'subreddits': result[5]
-                    }
-                    
-                    # Merge with new summary
-                    merged_summary = self._merge_summaries(summary, existing_data)
-                    merged_summary.id = existing_id  # Store ID for updating
-                    updated_summaries.append(merged_summary)
-                else:
-                    # No existing summary, use as is
-                    updated_summaries.append(summary)
-        
-        return updated_summaries
+        # Skip database merge since we're using BigQuery for storage
+        # and don't have a PostgreSQL database configured
+        logger.info("Skipping database merge - using direct BigQuery storage instead")
+        return summaries
     
     def _merge_summaries(self, summary: HourlySummary, existing_data: Dict[str, Any]) -> HourlySummary:
         """

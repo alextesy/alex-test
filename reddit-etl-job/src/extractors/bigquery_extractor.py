@@ -32,12 +32,13 @@ class BigQueryExtractor:
             self._client = bigquery.Client(project=self.project_id)
         return self._client
     
-    def get_reddit_data(self, last_run_time: Optional[datetime] = None) -> pd.DataFrame:
+    def get_reddit_data(self, last_run_time: Optional[datetime] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """
         Fetch Reddit data from BigQuery.
         
         Args:
             last_run_time: Timestamp of the last successful ETL run
+            limit: Optional limit on number of rows to return
             
         Returns:
             DataFrame with Reddit posts/comments
@@ -67,7 +68,7 @@ class BigQueryExtractor:
                 url,
                 score,
                 message_type,
-                ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY created_at DESC, etl_timestamp DESC) as row_num
+                ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY created_at DESC, timestamp DESC) as row_num
             FROM
                 `{self.project_id}.{self.dataset_id}.{self.raw_table_id}`
             WHERE
@@ -93,6 +94,9 @@ class BigQueryExtractor:
         ORDER BY
             created_at DESC
         """
+        
+        if limit:
+            query += f"\nLIMIT {limit}"
         
         query_job = self.client.query(query)
         rows = [dict(row) for row in query_job]

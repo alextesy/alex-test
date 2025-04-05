@@ -2,6 +2,8 @@ import os
 import logging
 from typing import List, Dict, Any, TypeVar, Generic, Optional, Type
 from datetime import datetime
+import json
+import time
 
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
@@ -205,11 +207,45 @@ class BigQueryManager:
         client = self.connect()
         table_id = f"{self.project_id}.{self.dataset_id}.stock_mentions"
         
-        # Filter out records that already exist in BigQuery
-        # (In a production environment, consider batching this check for better performance)
+        # Instead of checking one by one, batch query for existing records
+        message_ticker_pairs = [(mention['message_id'], mention['ticker']) for mention in mentions]
+        
+        # Prepare unique keys for batch existence check
+        unique_keys = set()
+        for message_id, ticker in message_ticker_pairs:
+            unique_keys.add(f"{message_id}_{ticker}")
+        
+        # Check which records already exist in a single query
+        existing_records = set()
+        
+        if unique_keys:
+            # Split into chunks to avoid overly large queries
+            chunk_size = 1000
+            key_chunks = [list(unique_keys)[i:i + chunk_size] for i in range(0, len(unique_keys), chunk_size)]
+            
+            for chunk in key_chunks:
+                # Create a placeholder string for the IN clause
+                placeholders = ", ".join([f"('{k.split('_')[0]}', '{k.split('_')[1]}')" for k in chunk])
+                
+                query = f"""
+                SELECT CONCAT(message_id, '_', ticker) as unique_key
+                FROM `{self.project_id}.{self.dataset_id}.stock_mentions`
+                WHERE (message_id, ticker) IN ({placeholders})
+                """
+                
+                logger.info(f"Checking for {len(chunk)} existing records")
+                query_job = client.query(query)
+                
+                for row in query_job:
+                    existing_records.add(row.unique_key)
+                
+                logger.info(f"Found {len(existing_records)} already existing records")
+        
+        # Filter out records that already exist
         new_mentions = []
         for mention in mentions:
-            if not self.check_stock_mention_exists(mention['message_id'], mention['ticker']):
+            unique_key = f"{mention['message_id']}_{mention['ticker']}"
+            if unique_key not in existing_records:
                 # Convert datetime objects to ISO format strings for JSON serialization
                 for key, value in mention.items():
                     if isinstance(value, datetime):
@@ -218,27 +254,38 @@ class BigQueryManager:
                 # Convert signals to string if it's not already
                 if 'signals' in mention and mention['signals'] is not None:
                     if not isinstance(mention['signals'], str):
-                        mention['signals'] = str(mention['signals'])
+                        mention['signals'] = safe_json_dumps(mention['signals'])
                 new_mentions.append(mention)
         
         if not new_mentions:
             logger.info("No new stock mentions to insert")
             return
         
-        try:
-            # Insert records into BigQuery
-            errors = client.insert_rows_json(table_id, new_mentions)
-            
-            if errors:
-                logger.error(f"Errors inserting stock mentions: {errors}")
-            else:
-                logger.info(f"Successfully inserted {len(new_mentions)} stock mentions to BigQuery")
-        except Exception as e:
-            logger.error(f"Error inserting stock mentions into BigQuery: {str(e)}")
-            # Log the first record for debugging
-            if new_mentions:
-                logger.error(f"Sample record causing error: {new_mentions[0]}")
-            raise
+        # Insert in batches rather than all at once
+        batch_size = 1000
+        mention_batches = [new_mentions[i:i + batch_size] for i in range(0, len(new_mentions), batch_size)]
+        
+        total_inserted = 0
+        for batch_index, batch in enumerate(mention_batches):
+            try:
+                # Insert records into BigQuery
+                logger.info(f"Inserting batch {batch_index + 1}/{len(mention_batches)} with {len(batch)} records")
+                errors = client.insert_rows_json(table_id, batch)
+                
+                if errors:
+                    logger.error(f"Errors inserting stock mentions batch {batch_index + 1}: {errors}")
+                else:
+                    total_inserted += len(batch)
+                    logger.info(f"Successfully inserted batch {batch_index + 1} ({total_inserted}/{len(new_mentions)} total)")
+            except Exception as e:
+                logger.error(f"Error inserting stock mentions batch {batch_index + 1} into BigQuery: {str(e)}")
+                # Log the first record for debugging
+                if batch:
+                    logger.error(f"Sample record causing error: {batch[0]}")
+                # Continue with next batch instead of failing completely
+                continue
+        
+        logger.info(f"Successfully inserted {total_inserted} stock mentions to BigQuery (out of {len(new_mentions)} new mentions)")
 
 
 class BaseBigQueryManager(Generic[T]):
@@ -337,92 +384,111 @@ class BaseBigQueryManager(Generic[T]):
     
     def insert_or_update_records(self, records: List[Dict[str, Any]]) -> int:
         """
-        Insert or update records in BigQuery.
+        Insert or update records in BigQuery using MERGE operation.
         
         Args:
-            records: List of record dictionaries
-        
+            records: List of records to insert/update
+            
         Returns:
-            int: Number of records inserted or updated
+            int: Number of records updated/inserted
         """
         if not records:
             return 0
         
-        table_id = f"{self.project_id}.{self.dataset_id}.{self.table_name}"
+        # Instead of creating SQL strings with potential Unicode issues,
+        # use BigQuery's parametrized queries with JSON data
         
-        # Process records for BigQuery compatibility
-        processed_records = []
+        # Convert records to JSON format for insert - with proper datetime handling
+        json_rows = []
         for record in records:
-            # Convert any complex types to JSON strings
-            for key, value in record.items():
-                if isinstance(value, (dict, list)):
-                    record[key] = str(value)
-            processed_records.append(record)
-        
-        # Use BigQuery merge operation
-        merge_query = f"""
-        MERGE `{self.project_id}.{self.dataset_id}.{self.table_name}` T
-        USING (
-            {self._create_values_subquery(processed_records)}
-        ) S
-        ON T.{self.ticker_field} = S.{self.ticker_field} AND T.{self.date_field} = S.{self.date_field}
-        WHEN MATCHED THEN
-            UPDATE SET {self._create_update_clause(processed_records[0])}
-        WHEN NOT MATCHED THEN
-            INSERT ({', '.join(processed_records[0].keys())})
-            VALUES ({', '.join([f'S.{k}' for k in processed_records[0].keys()])})
-        """
-        
-        query_job = self.client.query(merge_query)
-        query_job.result()
-        
-        return len(processed_records)
-    
-    def _create_values_subquery(self, records: List[Dict[str, Any]]) -> str:
-        """
-        Create a VALUES subquery for BigQuery MERGE operation.
-        
-        Args:
-            records: List of record dictionaries
+            # Create a copy of the record to avoid modifying the original
+            record_copy = record.copy()
             
+            # Convert any datetime objects to ISO format strings for JSON serialization
+            for key, value in record_copy.items():
+                if isinstance(value, datetime):
+                    record_copy[key] = value.isoformat()
+                elif isinstance(value, (dict, list)) and not isinstance(value, str):
+                    # Safely handle nested structures using the safe_json_dumps utility
+                    record_copy[key] = safe_json_dumps(value)
+            
+            json_rows.append(json.dumps(record_copy))
+        
+        # Create a temporary table with our records
+        temp_table_id = f"{self.table_name}_temp_{int(time.time())}"
+        schema = self._get_table_schema()
+        
+        # Create temp table
+        temp_table = bigquery.Table(f"{self.project_id}.{self.dataset_id}.{temp_table_id}", schema=schema)
+        try:
+            self.client.create_table(temp_table, exists_ok=False)
+            logger.info(f"Created temporary table {temp_table_id}")
+            
+            # Load JSON data to temp table
+            job_config = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                schema=schema,
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            )
+            
+            # Convert records to newline-delimited JSON
+            json_data = "\n".join(json_rows)
+            load_job = self.client.load_table_from_json(
+                json.loads("[" + ",".join(json_rows) + "]"), 
+                f"{self.project_id}.{self.dataset_id}.{temp_table_id}", 
+                job_config=job_config
+            )
+            load_job.result()  # Wait for load to complete
+            
+            # Define key fields for merge operation
+            key_fields = [self.ticker_field, self.date_field]
+            key_conditions = " AND ".join([f"T.{field} = S.{field}" for field in key_fields])
+            
+            # Get update columns (excluding key fields)
+            update_columns = [col for col in records[0].keys() if col not in key_fields]
+            update_clause = ", ".join([f"{col} = S.{col}" for col in update_columns])
+            
+            # Build field lists for insert
+            all_fields = ", ".join(records[0].keys())
+            source_fields = ", ".join([f"S.{field}" for field in records[0].keys()])
+            
+            # Execute MERGE operation using the temp table
+            merge_query = f"""
+            MERGE `{self.project_id}.{self.dataset_id}.{self.table_name}` T
+            USING `{self.project_id}.{self.dataset_id}.{temp_table_id}` S
+            ON {key_conditions}
+            WHEN MATCHED THEN
+              UPDATE SET {update_clause}
+            WHEN NOT MATCHED THEN
+              INSERT({all_fields})
+              VALUES({source_fields})
+            """
+            
+            query_job = self.client.query(merge_query)
+            result = query_job.result()
+            
+            # Count affected rows - not directly available from BigQuery merge,
+            # so we'll query the stats
+            return len(records)
+            
+        finally:
+            # Clean up the temporary table
+            try:
+                self.client.delete_table(f"{self.project_id}.{self.dataset_id}.{temp_table_id}")
+                logger.info(f"Deleted temporary table {temp_table_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary table: {str(e)}")
+
+    def _get_table_schema(self) -> List[bigquery.SchemaField]:
+        """
+        Get the schema for the current table.
+        
         Returns:
-            str: SQL VALUES subquery
+            List of SchemaField objects representing the table schema
         """
-        columns = records[0].keys()
-        values_rows = []
-        
-        for record in records:
-            values = []
-            for col in columns:
-                value = record.get(col)
-                if value is None:
-                    values.append("NULL")
-                elif isinstance(value, str):
-                    values.append("'{}'".format(value.replace("'", "\\'")))
-                elif isinstance(value, bool):
-                    values.append("TRUE" if value else "FALSE")
-                elif isinstance(value, (int, float)):
-                    values.append(str(value))
-                else:
-                    values.append("'{}'".format(str(value).replace("'", "\\'")))
-            
-            values_rows.append(f"({', '.join(values)})")
-        
-        return f"SELECT * FROM UNNEST([{', '.join(columns)}]) WITH ORDINALITY cols(name, pos) PIVOT (ANY_VALUE({', '.join(values_rows)}[OFFSET(pos-1)]) FOR pos IN {', '.join([str(i+1) for i in range(len(columns))])})"
-    
-    def _create_update_clause(self, record: Dict[str, Any]) -> str:
-        """
-        Create the UPDATE SET clause for BigQuery MERGE operation.
-        
-        Args:
-            record: Sample record to extract column names
-            
-        Returns:
-            str: SQL UPDATE SET clause
-        """
-        # Exclude the key fields from the update
-        update_columns = [col for col in record.keys() if col not in [self.ticker_field, self.date_field]]
-        return ", ".join([f"{col} = S.{col}" for col in update_columns])
+        table_ref = self.client.dataset(self.dataset_id).table(self.table_name)
+        table = self.client.get_table(table_ref)
+        return table.schema
     
     def save_records(self, records: List[T]) -> int:
         """

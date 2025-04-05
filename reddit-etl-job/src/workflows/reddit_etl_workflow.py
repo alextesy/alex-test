@@ -93,7 +93,7 @@ class RedditEtlWorkflow:
             await workflow.execute_activity(
                 save_stock_mentions_activity,
                 stock_mentions,
-                start_to_close_timeout=timedelta(minutes=5),
+                start_to_close_timeout=timedelta(minutes=15),
                 retry_policy=RetryPolicy(
                     maximum_attempts=3,
                     initial_interval=timedelta(seconds=10)
@@ -133,19 +133,19 @@ class RedditEtlWorkflow:
             save_daily_promise = workflow.execute_activity(
                 save_daily_summaries_activity,
                 daily_summaries,
-                start_to_close_timeout=timedelta(minutes=5)
+                start_to_close_timeout=timedelta(minutes=10)
             )
             
             save_hourly_promise = workflow.execute_activity(
                 save_hourly_summaries_activity,
                 hourly_summaries,
-                start_to_close_timeout=timedelta(minutes=5)
+                start_to_close_timeout=timedelta(minutes=10)
             )
             
             save_weekly_promise = workflow.execute_activity(
                 save_weekly_summaries_activity,
                 weekly_summaries,
-                start_to_close_timeout=timedelta(minutes=5)
+                start_to_close_timeout=timedelta(minutes=10)
             )
             
             # Wait for all saves to complete

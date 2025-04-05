@@ -86,22 +86,49 @@ gcloud projects add-iam-policy-binding ${GOOGLE_CLOUD_PROJECT_ID} \
   --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
   --role="roles/bigquery.jobUser"
 
+# Permission to access Firestore/Datastore (for storing run timestamps)
+echo "Adding Firestore/Datastore user role..."
+gcloud projects add-iam-policy-binding ${GOOGLE_CLOUD_PROJECT_ID} \
+  --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+  --role="roles/datastore.user"
+
 # Deploy the worker as a Cloud Run job (not a service)
 echo "Deploying as Cloud Run job..."
-gcloud run jobs create $CLOUD_RUN_SERVICE_NAME \
-  --image $IMAGE_NAME \
-  --region $GCP_REGION \
-  --tasks 1 \
-  --memory 1Gi \
-  --cpu 1 \
-  --max-retries 3 \
-  --task-timeout 3600 \
-  --service-account $SERVICE_ACCOUNT_EMAIL \
-  --set-env-vars="TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}" \
-  --set-env-vars="TEMPORAL_HOST=${TEMPORAL_HOST}" \
-  --set-env-vars="TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE}" \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT_ID=${GOOGLE_CLOUD_PROJECT_ID}" \
-  --set-env-vars="BIGQUERY_DATASET=${BIGQUERY_DATASET}"
+
+# Check if job already exists
+if gcloud run jobs describe $CLOUD_RUN_SERVICE_NAME --region $GCP_REGION &>/dev/null; then
+  echo "Updating existing Cloud Run job..."
+  gcloud run jobs update $CLOUD_RUN_SERVICE_NAME \
+    --image $IMAGE_NAME \
+    --region $GCP_REGION \
+    --tasks 1 \
+    --memory 4Gi \
+    --cpu 1 \
+    --max-retries 3 \
+    --task-timeout 10800 \
+    --service-account $SERVICE_ACCOUNT_EMAIL \
+    --set-env-vars="TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}" \
+    --set-env-vars="TEMPORAL_HOST=${TEMPORAL_HOST}" \
+    --set-env-vars="TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE}" \
+    --set-env-vars="GOOGLE_CLOUD_PROJECT_ID=${GOOGLE_CLOUD_PROJECT_ID}" \
+    --set-env-vars="BIGQUERY_DATASET=${BIGQUERY_DATASET}"
+else
+  echo "Creating new Cloud Run job..."
+  gcloud run jobs create $CLOUD_RUN_SERVICE_NAME \
+    --image $IMAGE_NAME \
+    --region $GCP_REGION \
+    --tasks 1 \
+    --memory 4Gi \
+    --cpu 1 \
+    --max-retries 3 \
+    --task-timeout 10800 \
+    --service-account $SERVICE_ACCOUNT_EMAIL \
+    --set-env-vars="TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}" \
+    --set-env-vars="TEMPORAL_HOST=${TEMPORAL_HOST}" \
+    --set-env-vars="TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE}" \
+    --set-env-vars="GOOGLE_CLOUD_PROJECT_ID=${GOOGLE_CLOUD_PROJECT_ID}" \
+    --set-env-vars="BIGQUERY_DATASET=${BIGQUERY_DATASET}"
+fi
 
 echo "=== Deployment completed successfully ==="
 echo "Job name: $CLOUD_RUN_SERVICE_NAME"

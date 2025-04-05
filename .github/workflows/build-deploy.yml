@@ -1,0 +1,66 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: 
+      - main  # or your default branch
+    paths:
+      - 'reddit-etl-job/**'  # Only trigger if changes in this directory
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Needed for auth with GCP
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker
+
+      - name: Build and push Docker image
+        working-directory: reddit-etl-job
+        env:
+          GCR_REPOSITORY: ${{ secrets.GCR_REPOSITORY }}
+          GOOGLE_CLOUD_PROJECT_ID: ${{ secrets.GOOGLE_CLOUD_PROJECT_ID }}
+        run: |
+          IMAGE_NAME="gcr.io/${GOOGLE_CLOUD_PROJECT_ID}/${GCR_REPOSITORY}:latest"
+          docker build -t $IMAGE_NAME .
+          docker push $IMAGE_NAME
+
+      - name: Deploy to Cloud Run
+        working-directory: reddit-etl-job
+        env:
+          GOOGLE_CLOUD_PROJECT_ID: ${{ secrets.GOOGLE_CLOUD_PROJECT_ID }}
+          CLOUD_RUN_SERVICE_NAME: ${{ secrets.CLOUD_RUN_SERVICE_NAME }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          TEMPORAL_NAMESPACE: ${{ secrets.TEMPORAL_NAMESPACE }}
+          TEMPORAL_HOST: ${{ secrets.TEMPORAL_HOST }}
+          TEMPORAL_TASK_QUEUE: ${{ secrets.TEMPORAL_TASK_QUEUE }}
+          BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
+          SERVICE_ACCOUNT_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+          GCR_REPOSITORY: ${{ secrets.GCR_REPOSITORY }}
+        run: |
+          IMAGE_NAME="gcr.io/${GOOGLE_CLOUD_PROJECT_ID}/${GCR_REPOSITORY}:latest"
+          gcloud run jobs update $CLOUD_RUN_SERVICE_NAME \
+            --image $IMAGE_NAME \
+            --region $GCP_REGION \
+            --service-account $SERVICE_ACCOUNT_EMAIL \
+            --set-env-vars="TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}" \
+            --set-env-vars="TEMPORAL_HOST=${TEMPORAL_HOST}" \
+            --set-env-vars="TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE}" \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT_ID=${GOOGLE_CLOUD_PROJECT_ID}" \
+            --set-env-vars="BIGQUERY_DATASET=${BIGQUERY_DATASET}" 
