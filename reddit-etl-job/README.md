@@ -53,7 +53,7 @@ The application uses:
 - Temporal.io for workflow orchestration
 - BigQuery for data storage and retrieval
 - Google Cloud Run for serverless execution
-- NLTK and other NLP libraries for sentiment analysis
+- Spacy and other NLP libraries for sentiment analysis
 
 ## File Structure
 

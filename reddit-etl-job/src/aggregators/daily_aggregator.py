@@ -1,10 +1,8 @@
 import logging
-import json
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
-from sqlalchemy.engine import Engine
 
 from src.models.stock_data import StockMention, DailySummary
 from src.utils.base_aggregator import BaseAggregator
@@ -17,15 +15,10 @@ class DailyAggregator(BaseAggregator[DailySummary]):
     Aggregates stock mentions by day.
     """
     
-    def __init__(self, db_engine=None):
-        """
-        Initialize the daily aggregator.
-        
-        Args:
-            db_engine: Optional SQLAlchemy database engine (not used)
-        """
+    def __init__(self):
+
         # Call the base class constructor
-        super().__init__(db_engine)
+        super().__init__()
     
     def aggregate(self, mentions: List[StockMention], incremental: bool = True) -> List[DailySummary]:
         """

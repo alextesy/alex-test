@@ -79,9 +79,20 @@ class DailySummary:
         """
         Convert to a dictionary representation, suitable for database insertion.
         """
+        # Ensure date has no timezone info if it's a datetime object
+        date_value = self.date
+        if isinstance(date_value, datetime):
+            if date_value.tzinfo is not None:
+                # Create a timezone-naive copy if the datetime has timezone info
+                date_value = datetime(
+                    date_value.year, date_value.month, date_value.day,
+                    date_value.hour, date_value.minute, date_value.second,
+                    date_value.microsecond
+                )
+        
         return {
             'ticker': self.ticker,
-            'date': self.date,
+            'date': date_value,
             'mention_count': self.mention_count,
             'avg_sentiment': float(self.avg_sentiment),
             'weighted_sentiment': float(self.weighted_sentiment),
@@ -122,9 +133,28 @@ class HourlySummary:
         """
         Convert to a dictionary representation, suitable for database insertion.
         """
+        # Ensure hour_start is a proper timestamp with hours, minutes, and seconds
+        # If it's just a date, add time component (00:00:00)
+        if isinstance(self.hour_start, datetime):
+            # Always ensure hour_start has time component and no timezone info
+            hour_start = self.hour_start
+            if hour_start.tzinfo is not None:
+                # Create a timezone-naive copy if the datetime has timezone info
+                hour_start = datetime(
+                    hour_start.year, hour_start.month, hour_start.day,
+                    hour_start.hour, hour_start.minute, hour_start.second,
+                    hour_start.microsecond
+                )
+            if hour_start.hour == 0 and hour_start.minute == 0 and hour_start.second == 0:
+                # This might be a date-only value, ensure it has time component
+                hour_start = hour_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            # If it's not a datetime, convert it to one
+            hour_start = datetime.combine(self.hour_start, datetime.min.time())
+            
         return {
             'ticker': self.ticker,
-            'hour_start': self.hour_start,
+            'hour_start': hour_start,
             'mention_count': self.mention_count,
             'avg_sentiment': float(self.avg_sentiment),
             'weighted_sentiment': float(self.weighted_sentiment),
@@ -164,9 +194,27 @@ class WeeklySummary:
         """
         Convert to a dictionary representation, suitable for database insertion.
         """
+        # Ensure week_start is a proper timestamp with hours, minutes, and seconds
+        if isinstance(self.week_start, datetime):
+            # Always ensure week_start has time component with no timezone info
+            week_start = self.week_start
+            if week_start.tzinfo is not None:
+                # Create a timezone-naive copy if the datetime has timezone info
+                week_start = datetime(
+                    week_start.year, week_start.month, week_start.day,
+                    week_start.hour, week_start.minute, week_start.second,
+                    week_start.microsecond
+                )
+            if week_start.hour == 0 and week_start.minute == 0 and week_start.second == 0:
+                # This might be a date-only value, ensure it has time component
+                week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            # If it's not a datetime, convert it to one
+            week_start = datetime.combine(self.week_start, datetime.min.time())
+            
         return {
             'ticker': self.ticker,
-            'week_start': self.week_start,
+            'week_start': week_start,  # Keeping as datetime object for BigQuery TIMESTAMP type
             'mention_count': self.mention_count,
             'avg_sentiment': float(self.avg_sentiment),
             'weighted_sentiment': float(self.weighted_sentiment),

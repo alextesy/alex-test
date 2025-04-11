@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
-from sqlalchemy.engine import Engine
 
 from src.models.stock_data import StockMention, HourlySummary
 from src.utils.base_aggregator import BaseAggregator
@@ -16,15 +15,10 @@ class HourlyAggregator(BaseAggregator[HourlySummary]):
     Aggregates stock mentions by hour.
     """
     
-    def __init__(self, db_engine=None):
-        """
-        Initialize the hourly aggregator.
-        
-        Args:
-            db_engine: Optional SQLAlchemy database engine (not used)
-        """
+    def __init__(self):
+
         # Call the base class constructor
-        super().__init__(db_engine)
+        super().__init__()
     
     def _add_time_columns(self, df: pd.DataFrame) -> None:
         """
@@ -35,7 +29,10 @@ class HourlyAggregator(BaseAggregator[HourlySummary]):
         """
         # Convert created_at to hourly buckets
         df['created_at_dt'] = pd.to_datetime(df['created_at'])
+        # Ensure hour_start has time component (HH:00:00)
         df['hour_start'] = df['created_at_dt'].dt.floor('H')
+        # No need to convert to string and back to datetime, keep as datetime
+        # This ensures the time component is preserved
     
     def _group_data(self, df: pd.DataFrame):
         """

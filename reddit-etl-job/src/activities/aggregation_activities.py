@@ -1,6 +1,5 @@
 import logging
 from typing import List
-import sqlalchemy
 
 from temporalio import activity
 
@@ -8,7 +7,6 @@ from src.models.stock_data import StockMention, DailySummary, HourlySummary, Wee
 from src.aggregators.daily_aggregator import DailyAggregator
 from src.aggregators.hourly_aggregator import HourlyAggregator
 from src.aggregators.weekly_aggregator import WeeklyAggregator
-from src.utils.db_utils import DBManager
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +25,9 @@ async def aggregate_daily_summaries_activity(
     """
     logger.info(f"Starting aggregation activity: Creating daily summaries from {len(stock_mentions)} stock mentions")
     
-    # Get database connection
-    db_manager = DBManager()
-    engine = db_manager.connect()
     
     # Create aggregator and process data
-    aggregator = DailyAggregator(engine)
+    aggregator = DailyAggregator()
     daily_summaries = aggregator.aggregate(stock_mentions, incremental=True)
     
     logger.info(f"Generated {len(daily_summaries)} daily stock summaries")
@@ -54,12 +49,10 @@ async def aggregate_hourly_summaries_activity(
     """
     logger.info(f"Starting aggregation activity: Creating hourly summaries from {len(stock_mentions)} stock mentions")
     
-    # Get database connection
-    db_manager = DBManager()
-    engine = db_manager.connect()
+
     
     # Create aggregator and process data
-    aggregator = HourlyAggregator(engine)
+    aggregator = HourlyAggregator()
     hourly_summaries = aggregator.aggregate(stock_mentions, incremental=True)
     
     logger.info(f"Generated {len(hourly_summaries)} hourly stock summaries")
@@ -80,13 +73,10 @@ async def aggregate_weekly_summaries_activity(
         List of weekly summary objects
     """
     logger.info(f"Starting aggregation activity: Creating weekly summaries from {len(stock_mentions)} stock mentions")
-    
-    # Get database connection
-    db_manager = DBManager()
-    engine = db_manager.connect()
+
     
     # Create aggregator and process data
-    aggregator = WeeklyAggregator(engine)
+    aggregator = WeeklyAggregator()
     weekly_summaries = aggregator.aggregate(stock_mentions, incremental=True)
     
     logger.info(f"Generated {len(weekly_summaries)} weekly stock summaries")

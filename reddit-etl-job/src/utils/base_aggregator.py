@@ -4,8 +4,6 @@ import numpy as np
 from datetime import datetime
 from typing import List, Dict, Any, Optional, TypeVar, Generic, Type
 
-from sqlalchemy.engine import Engine
-
 from src.models.stock_data import StockMention
 
 # Type variable for the aggregation result type
@@ -17,18 +15,6 @@ class BaseAggregator(Generic[R]):
     """
     Base class for all aggregators that process stock mentions.
     """
-    
-    def __init__(self, db_engine=None):
-        """
-        Initialize the aggregator.
-        
-        Args:
-            db_engine: Optional SQLAlchemy database engine (not used)
-        """
-        # We're not using the database engine, but keeping the parameter
-        # for compatibility with existing code
-        self.db_engine = db_engine
-    
     def aggregate(self, mentions: List[StockMention], incremental: bool = True) -> List[R]:
         """
         Aggregate stock mentions.

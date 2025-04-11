@@ -40,7 +40,7 @@ async def main():
         RedditEtlWorkflow.run,
         id=workflow_id,
         task_queue=TASK_QUEUE,
-        execution_timeout=timedelta(hours=2)
+        execution_timeout=timedelta(hours=8)
     )
     
     logger.info(f"Workflow started with ID: {workflow_id}")

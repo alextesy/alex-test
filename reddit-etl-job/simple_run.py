@@ -50,6 +50,136 @@ def run_async_activity(activity_func, *args, **kwargs):
     finally:
         loop.close()
 
+def setup_bigquery():
+    """Set up BigQuery tables."""
+    from src.utils.bigquery_utils import BigQueryManager
+    bq_manager = BigQueryManager()
+    bq_manager.setup_tables()
+    return bq_manager
+
+def extract_reddit_data(current_time):
+    """Extract data from Reddit."""
+    from src.activities.extraction_activities import extract_reddit_data_activity
+    from src.activities.state_activities import (
+        get_step_last_run_activity,
+        update_step_timestamp_activity,
+        STEP_EXTRACTION
+    )
+    
+    extraction_last_run = run_async_activity(get_step_last_run_activity, STEP_EXTRACTION)
+    logger.info(f"Extracting data since: {extraction_last_run}")
+    reddit_data = run_async_activity(extract_reddit_data_activity, extraction_last_run)
+    logger.info(f"Extracted {len(reddit_data)} Reddit posts/comments")
+    # Update extraction timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_EXTRACTION, current_time)
+    
+    return reddit_data
+
+def analyze_stock_mentions(reddit_data, current_time):
+    """Analyze data for stock mentions."""
+    from src.activities.analysis_activities import analyze_stock_mentions_activity
+    from src.activities.state_activities import (
+        get_step_last_run_activity,
+        update_step_timestamp_activity,
+        STEP_ANALYSIS
+    )
+    
+    analysis_last_run = run_async_activity(get_step_last_run_activity, STEP_ANALYSIS)
+    stock_mentions = run_async_activity(analyze_stock_mentions_activity, reddit_data)
+    logger.info(f"Found {len(stock_mentions)} stock mentions")
+    # Update analysis timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_ANALYSIS, current_time)
+    
+    return stock_mentions
+
+def save_stock_mentions(stock_mentions, current_time):
+    """Save stock mentions to BigQuery."""
+    from src.activities.persistence_activities import save_stock_mentions_activity
+    from src.activities.state_activities import (
+        update_step_timestamp_activity,
+        STEP_STOCK_PERSISTENCE
+    )
+    
+    save_result = run_async_activity(save_stock_mentions_activity, stock_mentions)
+    logger.info(f"Saved {save_result} stock mentions to BigQuery")
+    # Update stock persistence timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_STOCK_PERSISTENCE, current_time)
+    
+    return save_result
+
+def aggregate_summaries(stock_mentions, current_time):
+    """Aggregate summaries at different time intervals."""
+    from src.activities.aggregation_activities import (
+        aggregate_daily_summaries_activity,
+        aggregate_hourly_summaries_activity,
+        aggregate_weekly_summaries_activity
+    )
+    from src.activities.state_activities import (
+        update_step_timestamp_activity,
+        STEP_DAILY_AGGREGATION,
+        STEP_HOURLY_AGGREGATION,
+        STEP_WEEKLY_AGGREGATION
+    )
+    
+    # Aggregate daily summaries
+    daily_summaries = run_async_activity(
+        aggregate_daily_summaries_activity, 
+        stock_mentions
+    )
+    # Update daily aggregation timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_DAILY_AGGREGATION, current_time)
+    
+    # Aggregate hourly summaries
+    hourly_summaries = run_async_activity(
+        aggregate_hourly_summaries_activity,
+        stock_mentions
+    )
+    # Update hourly aggregation timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_HOURLY_AGGREGATION, current_time)
+    
+    # Aggregate weekly summaries
+    weekly_summaries = run_async_activity(
+        aggregate_weekly_summaries_activity, 
+        stock_mentions
+    )
+    # Update weekly aggregation timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_WEEKLY_AGGREGATION, current_time)
+    
+    return daily_summaries, hourly_summaries, weekly_summaries
+
+def save_aggregated_data(daily_summaries, hourly_summaries, weekly_summaries, current_time):
+    """Save aggregated data to BigQuery."""
+    from src.activities.persistence_activities import (
+        save_daily_summaries_activity,
+        save_hourly_summaries_activity,
+        save_weekly_summaries_activity
+    )
+    from src.activities.state_activities import (
+        update_step_timestamp_activity,
+        STEP_DAILY_PERSISTENCE,
+        STEP_HOURLY_PERSISTENCE,
+        STEP_WEEKLY_PERSISTENCE
+    )
+    
+    # Save daily summaries
+    daily_result = run_async_activity(save_daily_summaries_activity, daily_summaries)
+    # Update daily persistence timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_DAILY_PERSISTENCE, current_time)
+    
+    # Save hourly summaries
+    hourly_result = run_async_activity(save_hourly_summaries_activity, hourly_summaries)
+    # Update hourly persistence timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_HOURLY_PERSISTENCE, current_time)
+    
+    # Save weekly summaries
+    weekly_result = run_async_activity(save_weekly_summaries_activity, weekly_summaries)
+    # Update weekly persistence timestamp
+    run_async_activity(update_step_timestamp_activity, STEP_WEEKLY_PERSISTENCE, current_time)
+    
+    logger.info(f"Saved {daily_result} daily summaries, {hourly_result} hourly summaries, and {weekly_result} weekly summaries")
+    
+    return daily_result, hourly_result, weekly_result
+
 def main():
     """Main entry point for the simple ETL runner."""
     logger.info("Starting Reddit ETL job for stock analysis (Simple Runner)")
@@ -60,75 +190,28 @@ def main():
         sys.exit(1)
     
     try:
-        # Import activities directly
-        from src.activities.extraction_activities import extract_reddit_data_activity
-        from src.activities.analysis_activities import analyze_stock_mentions_activity
-        from src.activities.aggregation_activities import (
-            aggregate_daily_summaries_activity,
-            aggregate_hourly_summaries_activity,
-            aggregate_weekly_summaries_activity
-        )
-        from src.activities.persistence_activities import (
-            save_stock_mentions_activity,
-            save_daily_summaries_activity,
-            save_hourly_summaries_activity,
-            save_weekly_summaries_activity
-        )
-        from src.activities.state_activities import get_last_run_activity, update_run_timestamp_activity
-
         # Set up BigQuery
-        from src.utils.bigquery_utils import BigQueryManager
-        bq_manager = BigQueryManager()
-        bq_manager.setup_tables()
+        setup_bigquery()
         
-        # Define start and end time (last 24 hours)
-        end_time = datetime.utcnow()
-        start_time = end_time - timedelta(hours=24)
+        # Current time used for all timestamp updates
+        current_time = datetime.utcnow()
+        logger.info(f"Current time: {current_time}")
         
-        # Run the ETL process directly
-        logger.info(f"Extracting data from {start_time} to {end_time}")
+        # 1. Extract data from Reddit
+        reddit_data = extract_reddit_data(current_time)
         
-        # Get the last run timestamp
-        last_run_time = run_async_activity(get_last_run_activity)
+        # 2. Analyze data for stock mentions
+        stock_mentions = analyze_stock_mentions(reddit_data, current_time)
         
-        # Extract data with proper time filtering
-        reddit_data = run_async_activity(extract_reddit_data_activity, last_run_time)
-        logger.info(f"Extracted {len(reddit_data)} Reddit posts/comments")
+        # 3. Save stock mentions to BigQuery
+        save_stock_mentions(stock_mentions, current_time)
         
-        # Analyze data
-        stock_mentions = run_async_activity(analyze_stock_mentions_activity, reddit_data)
-        logger.info(f"Found {len(stock_mentions)} stock mentions")
+        # 4. Aggregate summaries
+        daily_summaries, hourly_summaries, weekly_summaries = aggregate_summaries(stock_mentions, current_time)
         
-        # Save mentions
-        save_result = run_async_activity(save_stock_mentions_activity, stock_mentions)
-        logger.info(f"Saved {save_result} stock mentions to BigQuery")
+        # 5. Save aggregated data
+        save_aggregated_data(daily_summaries, hourly_summaries, weekly_summaries, current_time)
         
-        # Aggregate data
-        daily_summaries = run_async_activity(
-            aggregate_daily_summaries_activity, 
-            stock_mentions
-        )
-        
-        hourly_summaries = run_async_activity(
-            aggregate_hourly_summaries_activity,
-            stock_mentions
-        )
-        
-        weekly_summaries = run_async_activity(
-            aggregate_weekly_summaries_activity, 
-            stock_mentions
-        )
-        
-        # Save aggregated data
-        daily_result = run_async_activity(save_daily_summaries_activity, daily_summaries)
-        hourly_result = run_async_activity(save_hourly_summaries_activity, hourly_summaries)
-        weekly_result = run_async_activity(save_weekly_summaries_activity, weekly_summaries)
-        
-        # Update the timestamp for the next run
-        run_async_activity(update_run_timestamp_activity, end_time)
-        logger.info(f"Updated last run timestamp to: {end_time}")
-        
-        logger.info(f"Saved {daily_result} daily summaries, {hourly_result} hourly summaries, and {weekly_result} weekly summaries")
         logger.info("ETL job completed successfully")
         
     except Exception as e:

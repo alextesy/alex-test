@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 import logging
 
 from temporalio import workflow
@@ -38,129 +38,37 @@ class RedditEtlWorkflow:
             dict: Summary of the ETL run
         """
         current_run_time = datetime.utcnow()
-        processed_data = False
         
         try:
-            # Get last run timestamp
-            last_run_time = await workflow.execute_activity(
-                get_last_run_activity,
-                start_to_close_timeout=timedelta(minutes=2)
-            )
+            # Task 1: Get last run timestamp
+            last_run_time = await self._get_last_run_time()
             
-            # Extract Reddit data from BigQuery since last run
-            reddit_data = await workflow.execute_activity(
-                extract_reddit_data_activity,
-                last_run_time,
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=10)
-                )
-            )
+            # Task 2: Extract Reddit data
+            reddit_data = await self._extract_reddit_data(last_run_time)
             
             if not reddit_data:
-                # Still update the timestamp even if there's no new data
-                await workflow.execute_activity(
-                    update_run_timestamp_activity,
-                    current_run_time,
-                    start_to_close_timeout=timedelta(minutes=2)
-                )
-                
-                return {"status": "success", "message": "No new Reddit data found", "processed": 0}
+                logger.error("No new Reddit data found")
+                raise ApplicationError("ETL workflow failed: No new Reddit data found")
             
-            # Process data to identify stock mentions
-            stock_mentions = await workflow.execute_activity(
-                analyze_stock_mentions_activity,
-                reddit_data,
-                start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=30)
-                )
-            )
+            # Task 3: Analyze stock mentions
+            stock_mentions = await self._analyze_stock_mentions(reddit_data)
             
             if not stock_mentions:
                 # Still update the timestamp even if no stock mentions were found
-                await workflow.execute_activity(
-                    update_run_timestamp_activity,
-                    current_run_time,
-                    start_to_close_timeout=timedelta(minutes=2)
-                )
-                
+                await self._update_run_timestamp(current_run_time)
                 return {"status": "success", "message": "No stock mentions identified", "processed": 0}
             
-            # Save stock mentions to PostgreSQL
-            await workflow.execute_activity(
-                save_stock_mentions_activity,
-                stock_mentions,
-                start_to_close_timeout=timedelta(minutes=15),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=10)
-                )
-            )
+            # Task 4: Save stock mentions
+            await self._save_stock_mentions(stock_mentions)
             
-            # Mark as processed
-            processed_data = True
+            # Task 5: Aggregate summaries
+            daily_summaries, hourly_summaries, weekly_summaries = await self._aggregate_summaries(stock_mentions)
             
-            # Execute aggregation activities in parallel
-            daily_summaries_promise = workflow.execute_activity(
-                aggregate_daily_summaries_activity,
-                stock_mentions,
-                start_to_close_timeout=timedelta(minutes=5)
-            )
+            # Task 6: Save aggregated data
+            await self._save_aggregated_data(daily_summaries, hourly_summaries, weekly_summaries)
             
-            hourly_summaries_promise = workflow.execute_activity(
-                aggregate_hourly_summaries_activity,
-                stock_mentions,
-                start_to_close_timeout=timedelta(minutes=5)
-            )
-            
-            weekly_summaries_promise = workflow.execute_activity(
-                aggregate_weekly_summaries_activity,
-                stock_mentions,
-                start_to_close_timeout=timedelta(minutes=5)
-            )
-            
-            # Wait for all aggregations to complete
-            daily_summaries, hourly_summaries, weekly_summaries = await workflow.wait_all(
-                daily_summaries_promise,
-                hourly_summaries_promise,
-                weekly_summaries_promise
-            )
-            
-            # Save aggregations to database in parallel
-            save_daily_promise = workflow.execute_activity(
-                save_daily_summaries_activity,
-                daily_summaries,
-                start_to_close_timeout=timedelta(minutes=10)
-            )
-            
-            save_hourly_promise = workflow.execute_activity(
-                save_hourly_summaries_activity,
-                hourly_summaries,
-                start_to_close_timeout=timedelta(minutes=10)
-            )
-            
-            save_weekly_promise = workflow.execute_activity(
-                save_weekly_summaries_activity,
-                weekly_summaries,
-                start_to_close_timeout=timedelta(minutes=10)
-            )
-            
-            # Wait for all saves to complete
-            await workflow.wait_all(
-                save_daily_promise,
-                save_hourly_promise,
-                save_weekly_promise
-            )
-            
-            # Update state with current run time
-            await workflow.execute_activity(
-                update_run_timestamp_activity,
-                current_run_time,
-                start_to_close_timeout=timedelta(minutes=2)
-            )
+            # Task 7: Update run timestamp
+            await self._update_run_timestamp(current_run_time)
             
             return {
                 "status": "success",
@@ -172,16 +80,124 @@ class RedditEtlWorkflow:
             }
         
         except Exception as e:
-            # If we've processed some data but failed later, still update timestamp
-            # This prevents reprocessing the same data in case of a partial failure
-            if processed_data:
-                try:
-                    await workflow.execute_activity(
-                        update_run_timestamp_activity,
-                        current_run_time,
-                        start_to_close_timeout=timedelta(minutes=2)
-                    )
-                except Exception as update_error:
-                    logger.error(f"Failed to update timestamp after partial processing: {str(update_error)}")
-            
-            raise ApplicationError(f"ETL workflow failed: {str(e)}") 
+            logger.error(f"ETL workflow failed: {str(e)}")
+            raise ApplicationError(f"ETL workflow failed: {str(e)}")
+    
+    @workflow.task
+    async def _get_last_run_time(self) -> datetime:
+        """Task to get the last run timestamp."""
+        return await workflow.execute_activity(
+            get_last_run_activity,
+            start_to_close_timeout=timedelta(minutes=2)
+        )
+    
+    @workflow.task
+    async def _extract_reddit_data(self, last_run_time: datetime) -> List[Dict[str, Any]]:
+        """Task to extract Reddit data since last run."""
+        return await workflow.execute_activity(
+            extract_reddit_data_activity,
+            last_run_time,
+            start_to_close_timeout=timedelta(minutes=30),
+            retry_policy=RetryPolicy(
+                maximum_attempts=3,
+                initial_interval=timedelta(seconds=10)
+            )
+        )
+    
+    @workflow.task
+    async def _analyze_stock_mentions(self, reddit_data: List[Dict[str, Any]]) -> List[StockMention]:
+        """Task to analyze Reddit data for stock mentions."""
+        return await workflow.execute_activity(
+            analyze_stock_mentions_activity,
+            reddit_data,
+            start_to_close_timeout=timedelta(minutes=30),
+            retry_policy=RetryPolicy(
+                maximum_attempts=3,
+                initial_interval=timedelta(seconds=30)
+            )
+        )
+    
+    @workflow.task
+    async def _save_stock_mentions(self, stock_mentions: List[StockMention]) -> int:
+        """Task to save stock mentions to the database."""
+        return await workflow.execute_activity(
+            save_stock_mentions_activity,
+            stock_mentions,
+            start_to_close_timeout=timedelta(minutes=60),
+            retry_policy=RetryPolicy(
+                maximum_attempts=3,
+                initial_interval=timedelta(seconds=10)
+            )
+        )
+    
+    @workflow.task
+    async def _aggregate_summaries(self, stock_mentions: List[StockMention]) -> Tuple[List[DailySummary], List[HourlySummary], List[WeeklySummary]]:
+        """Task to aggregate summaries at different time intervals."""
+        # Execute aggregation activities in parallel
+        daily_summaries_promise = workflow.execute_activity(
+            aggregate_daily_summaries_activity,
+            stock_mentions,
+            start_to_close_timeout=timedelta(minutes=30)
+        )
+        
+        hourly_summaries_promise = workflow.execute_activity(
+            aggregate_hourly_summaries_activity,
+            stock_mentions,
+            start_to_close_timeout=timedelta(minutes=30)
+        )
+        
+        weekly_summaries_promise = workflow.execute_activity(
+            aggregate_weekly_summaries_activity,
+            stock_mentions,
+            start_to_close_timeout=timedelta(minutes=30)
+        )
+        
+        # Wait for all aggregations to complete
+        return await workflow.wait_all(
+            daily_summaries_promise,
+            hourly_summaries_promise,
+            weekly_summaries_promise
+        )
+    
+    @workflow.task
+    async def _save_aggregated_data(
+        self, 
+        daily_summaries: List[DailySummary], 
+        hourly_summaries: List[HourlySummary], 
+        weekly_summaries: List[WeeklySummary]
+    ) -> None:
+        """Task to save aggregated data to the database."""
+        # Save aggregations to database in parallel
+        save_daily_promise = workflow.execute_activity(
+            save_daily_summaries_activity,
+            daily_summaries,
+            start_to_close_timeout=timedelta(minutes=60)
+        )
+        
+        save_hourly_promise = workflow.execute_activity(
+            save_hourly_summaries_activity,
+            hourly_summaries,
+            start_to_close_timeout=timedelta(minutes=60)
+        )
+        
+        save_weekly_promise = workflow.execute_activity(
+            save_weekly_summaries_activity,
+            weekly_summaries,
+            start_to_close_timeout=timedelta(minutes=60)
+        )
+        
+        # Wait for all saves to complete
+        await workflow.wait_all(
+            save_daily_promise,
+            save_hourly_promise,
+            save_weekly_promise
+        )
+    
+    @workflow.task
+    async def _update_run_timestamp(self, current_run_time: datetime) -> None:
+        """Task to update the run timestamp."""
+        await workflow.execute_activity(
+            update_run_timestamp_activity,
+            current_run_time,
+            start_to_close_timeout=timedelta(minutes=2)
+        ) 

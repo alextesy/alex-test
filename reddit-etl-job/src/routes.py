@@ -57,7 +57,7 @@ async def start_workflow() -> Dict[str, Any]:
         RedditEtlWorkflow.run,
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
-        execution_timeout=timedelta(hours=2)
+        execution_timeout=timedelta(hours=8)
     )
     
     return {

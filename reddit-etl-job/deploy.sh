@@ -35,14 +35,19 @@ GCP_REGION=${GCP_REGION:-"us-central1"}
 GCR_REPOSITORY=${GCR_REPOSITORY:-"reddit-etl"}
 CLOUD_RUN_SERVICE_NAME=${CLOUD_RUN_SERVICE_NAME:-"reddit-etl-job"}
 
-# Build the Docker image
+# Generate a timestamp for the image tag
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+IMAGE_TAG="gcr.io/${GOOGLE_CLOUD_PROJECT_ID}/${GCR_REPOSITORY}:${TIMESTAMP}"
+LATEST_TAG="gcr.io/${GOOGLE_CLOUD_PROJECT_ID}/${GCR_REPOSITORY}:latest"
+
+# Build the Docker image with BuildKit for better caching
 echo "Building Docker image..."
-IMAGE_NAME="gcr.io/${GOOGLE_CLOUD_PROJECT_ID}/${GCR_REPOSITORY}:latest"
-docker build -t $IMAGE_NAME .
+DOCKER_BUILDKIT=1 docker build --cache-from=${LATEST_TAG} -t ${IMAGE_TAG} -t ${LATEST_TAG} .
 
 # Push the image to Google Container Registry
 echo "Pushing image to Google Container Registry..."
-docker push $IMAGE_NAME
+docker push ${IMAGE_TAG}
+docker push ${LATEST_TAG}
 
 # Create service account for the ETL job if it doesn't exist
 SERVICE_ACCOUNT_NAME="reddit-etl-job"
@@ -99,13 +104,13 @@ echo "Deploying as Cloud Run job..."
 if gcloud run jobs describe $CLOUD_RUN_SERVICE_NAME --region $GCP_REGION &>/dev/null; then
   echo "Updating existing Cloud Run job..."
   gcloud run jobs update $CLOUD_RUN_SERVICE_NAME \
-    --image $IMAGE_NAME \
+    --image $IMAGE_TAG \
     --region $GCP_REGION \
     --tasks 1 \
-    --memory 4Gi \
-    --cpu 1 \
+    --memory 32Gi \
+    --cpu 8 \
     --max-retries 3 \
-    --task-timeout 10800 \
+    --task-timeout 28800 \
     --service-account $SERVICE_ACCOUNT_EMAIL \
     --set-env-vars="TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}" \
     --set-env-vars="TEMPORAL_HOST=${TEMPORAL_HOST}" \
@@ -115,13 +120,13 @@ if gcloud run jobs describe $CLOUD_RUN_SERVICE_NAME --region $GCP_REGION &>/dev/
 else
   echo "Creating new Cloud Run job..."
   gcloud run jobs create $CLOUD_RUN_SERVICE_NAME \
-    --image $IMAGE_NAME \
+    --image $IMAGE_TAG \
     --region $GCP_REGION \
     --tasks 1 \
-    --memory 4Gi \
-    --cpu 1 \
+    --memory 32Gi \
+    --cpu 8 \
     --max-retries 3 \
-    --task-timeout 10800 \
+    --task-timeout 28800 \
     --service-account $SERVICE_ACCOUNT_EMAIL \
     --set-env-vars="TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}" \
     --set-env-vars="TEMPORAL_HOST=${TEMPORAL_HOST}" \
@@ -132,6 +137,7 @@ fi
 
 echo "=== Deployment completed successfully ==="
 echo "Job name: $CLOUD_RUN_SERVICE_NAME"
+echo "Image: $IMAGE_TAG"
 echo "BigQuery dataset: $BIGQUERY_DATASET"
 echo ""
 echo "To run the job manually, use:"

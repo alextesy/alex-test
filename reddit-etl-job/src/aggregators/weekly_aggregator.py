@@ -3,8 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
-from sqlalchemy.engine import Engine
-
 from src.models.stock_data import StockMention, WeeklySummary
 from src.utils.base_aggregator import BaseAggregator
 from src.utils.json_utils import safe_json_loads, merge_count_dictionaries
@@ -16,16 +14,11 @@ class WeeklyAggregator(BaseAggregator[WeeklySummary]):
     Aggregates stock mentions by week.
     """
     
-    def __init__(self, db_engine=None):
-        """
-        Initialize the weekly aggregator.
-        
-        Args:
-            db_engine: Optional SQLAlchemy database engine (not used)
-        """
+    def __init__(self):
         # Call the base class constructor
-        super().__init__(db_engine)
-        
+        super().__init__()
+
+
     def _add_time_columns(self, df: pd.DataFrame) -> None:
         """
         Add week column for weekly grouping.
@@ -37,7 +30,13 @@ class WeeklyAggregator(BaseAggregator[WeeklySummary]):
         df['created_at_dt'] = pd.to_datetime(df['created_at'])
         # Get the start of the week (Monday)
         df['week_start'] = df['created_at_dt'] - pd.to_timedelta(df['created_at_dt'].dt.dayofweek, unit='D')
-        df['week_start'] = df['week_start'].dt.floor('D')  # Floor to start of day
+        # Floor to start of day but keep as datetime (not just date)
+        df['week_start'] = df['week_start'].dt.floor('D')
+        # Explicitly ensure time component is set to 00:00:00
+        df['week_start'] = df['week_start'].apply(
+            lambda x: x.replace(hour=0, minute=0, second=0, microsecond=0) if isinstance(x, datetime) else x
+        )
+        # No need to convert to string and back to datetime, keep as datetime
     
     def _group_data(self, df: pd.DataFrame):
         """

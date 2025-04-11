@@ -8,7 +8,6 @@ import time
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import NotFound as GoogleApiNotFound
-import sqlalchemy
 
 from src.utils.json_utils import safe_json_dumps
 
@@ -119,7 +118,7 @@ class BigQueryManager:
         
         self.schemas['stock_weekly_summary'] = [
             bigquery.SchemaField("ticker", "STRING"),
-            bigquery.SchemaField("week_start", "DATE"),
+            bigquery.SchemaField("week_start", "TIMESTAMP"),
             bigquery.SchemaField("mention_count", "INTEGER"),
             bigquery.SchemaField("avg_sentiment", "FLOAT"),
             bigquery.SchemaField("weighted_sentiment", "FLOAT"),
@@ -249,7 +248,11 @@ class BigQueryManager:
                 # Convert datetime objects to ISO format strings for JSON serialization
                 for key, value in mention.items():
                     if isinstance(value, datetime):
-                        mention[key] = value.isoformat()
+                        # For date fields (without time), use YYYY-MM-DD format
+                        if key == 'date' or key.endswith('_start'):
+                            mention[key] = value.strftime('%Y-%m-%d')
+                        else:
+                            mention[key] = value.isoformat()
                 
                 # Convert signals to string if it's not already
                 if 'signals' in mention and mention['signals'] is not None:
@@ -384,17 +387,17 @@ class BaseBigQueryManager(Generic[T]):
     
     def insert_or_update_records(self, records: List[Dict[str, Any]]) -> int:
         """
-        Insert or update records in BigQuery using MERGE operation.
+        Insert or update records in BigQuery.
         
         Args:
-            records: List of records to insert/update
+            records: List of record dictionaries
             
         Returns:
-            int: Number of records updated/inserted
+            Number of records processed
         """
         if not records:
             return 0
-        
+            
         # Instead of creating SQL strings with potential Unicode issues,
         # use BigQuery's parametrized queries with JSON data
         
@@ -407,7 +410,22 @@ class BaseBigQueryManager(Generic[T]):
             # Convert any datetime objects to ISO format strings for JSON serialization
             for key, value in record_copy.items():
                 if isinstance(value, datetime):
-                    record_copy[key] = value.isoformat()
+                    # Special handling for the actual DATE type in stock_weekly_summary
+                    if self.table_name == 'stock_weekly_summary' and key == 'week_start':
+                        record_copy[key] = value.strftime('%Y-%m-%d') # Format as DATE
+                    # For DATE type in stock_daily_summary
+                    elif self.table_name == 'stock_daily_summary' and key == 'date':
+                         record_copy[key] = value.strftime('%Y-%m-%d') # Format as DATE
+                    # For other TIMESTAMP fields
+                    elif key in ['hour_start', 'week_start'] or key.endswith('_start') or key == 'etl_timestamp' or key == 'created_at':
+                        # Always ensure timestamp has proper time component
+                        if value.hour == 0 and value.minute == 0 and value.second == 0:
+                            value = value.replace(hour=0, minute=0, second=0, microsecond=0)
+                        # Use BigQuery standard TIMESTAMP format (space separator)
+                        record_copy[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        # Fallback for any other datetime fields (should ideally be TIMESTAMP)
+                        record_copy[key] = value.strftime('%Y-%m-%d %H:%M:%S')
                 elif isinstance(value, (dict, list)) and not isinstance(value, str):
                     # Safely handle nested structures using the safe_json_dumps utility
                     record_copy[key] = safe_json_dumps(value)
