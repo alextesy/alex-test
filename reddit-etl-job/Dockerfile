@@ -33,5 +33,5 @@ COPY . .
 # Set Python path to include the current directory
 ENV PYTHONPATH=/app
 
-# Run the application
+# Run the application (Temporal Worker)
 CMD ["python", "simple_run.py"] 

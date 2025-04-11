@@ -8,8 +8,7 @@ from src.utils.bigquery_utils import BigQueryManager, DailyBigQueryManager, Hour
 
 logger = logging.getLogger(__name__)
 
-@activity.defn
-async def save_stock_mentions_activity(stock_mentions: List[StockMention]) -> int:
+def save_stock_mentions_activity(stock_mentions: List[StockMention]) -> int:
     """
     Activity to save stock mentions to BigQuery.
     

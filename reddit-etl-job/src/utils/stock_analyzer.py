@@ -2,6 +2,7 @@ import re
 import math
 import logging
 import pandas as pd
+import numpy as np
 import spacy
 from typing import List, Dict, Any, Set
 from datetime import datetime
@@ -57,7 +58,48 @@ class StockAnalyzer:
                                 )
         # Load stock tickers
         self.stock_tickers = self.load_stock_tickers()
-    
+
+        # Initialize regex patterns
+        self._init_regex_patterns()
+
+    def _init_regex_patterns(self):
+        """Precompile regex patterns used across the analyzer."""
+        # Pattern to extract potential stock tickers (2-5 letters, optional preceding $)
+        self.ticker_pattern = re.compile(r'(?<!\w)(?:\$)?([A-Za-z]{2,5})(?![a-zA-Z])')
+        
+        # Regex patterns for trading signals and other indicators
+        self.regex_buy = re.compile(
+            r'\b(buy|bought|buying|long|calls|bullish|moon|rocket|🚀|💎|🙌|going up|to the moon|undervalued|cheap|discount)\b',
+            re.IGNORECASE
+        )
+        self.regex_sell = re.compile(
+            r'\b(sell|selling|sold|short|puts|bearish|crash|dump|tank|dropping|overvalued|expensive|bubble|correction|margin call)\b',
+            re.IGNORECASE
+        )
+        self.regex_hold = re.compile(
+            r'\b(hold|holding|hodl|diamond hands|patient|patience|long term|longterm)\b',
+            re.IGNORECASE
+        )
+        self.regex_earnings = re.compile(
+            r'\b(earnings|revenue|growth|profit|loss|guidance|forecast|EPS|P/E|dividend)\b',
+            re.IGNORECASE
+        )
+        self.regex_news = re.compile(
+            r'\b(news|announcement|released|launched|partnership|acquisition|merger|FDA|approval|patent|lawsuit)\b',
+            re.IGNORECASE
+        )
+        self.regex_technical = re.compile(
+            r'\b(resistance|support|trend|breakout|pattern|cup|handle|head|shoulders|triangle|wedge|channel|RSI|MACD|oversold|overbought)\b',
+            re.IGNORECASE
+        )
+        self.regex_options = re.compile(
+            r'\b(option|call|put|strike|expiry|contracts|leaps|covered|naked|straddle|strangle|iron condor|spread)\b',
+            re.IGNORECASE
+        )
+        
+        self.regex_price = re.compile(r'\$?(\d+(?:\.\d+)?)(?:\$)?')
+        self.regex_percent = re.compile(r'([+-]?\d+(?:\.\d+)?)\s?%')
+
     def load_stock_tickers(self) -> Set[str]:
         """
         Load stock tickers from BigQuery or fallback sources.
@@ -123,61 +165,6 @@ class StockAnalyzer:
             client.create_table(table)
             logger.info(f"Created stock tickers table {table_id}")
             return False
-    
-    def _scrape_exchange_tickers(self) -> List[Dict[str, Any]]:
-
-        sources = {
-            "NASDAQ": "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt",
-            "NYSE": "ftp://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt"
-        }
-
-        all_stocks = []
-
-        for exchange, url in sources.items():
-            try:
-                df = pd.read_csv(url, sep='|')
-                if exchange == "NASDAQ":
-                    symbols = df[df['Test Issue'] == 'N']['Symbol']
-                    names = df[df['Test Issue'] == 'N']['Security Name']
-                else:
-                    symbols = df[df['Test Issue'] == 'N']['ACT Symbol']
-                    names = df[df['Test Issue'] == 'N']['Security Name']
-
-                for ticker, name in zip(symbols, names):
-                    if isinstance(ticker, str) and re.match(r'^[A-Z]{1,5}$', ticker):
-                        all_stocks.append({
-                            'ticker': ticker.strip(),
-                            'exchange': exchange,
-                            'company_name': name.strip(),
-                            'last_updated': datetime.now().isoformat()
-                        })
-
-                logger.info(f"Downloaded {len(symbols)} {exchange} stocks")
-            except Exception as e:
-                logger.error(f"Error downloading {exchange} stocks: {str(e)}")
-
-        return all_stocks
-    
-    def _batch_insert_tickers(self, client: bigquery.Client, table_id: str, 
-                              stocks: List[Dict[str, Any]]) -> None:
-        """
-        Insert stock tickers into BigQuery in efficient batches.
-        """
-        if not stocks:
-            logger.warning("No stocks to insert")
-            return
-        
-        # Insert in batches for better performance
-        batch_size = 1000
-        for i in range(0, len(stocks), batch_size):
-            batch = stocks[i:i+batch_size]
-            errors = client.insert_rows_json(table_id, batch)
-            if errors:
-                logger.error(f"Error inserting stock tickers: {errors}")
-            else:
-                logger.info(f"Inserted batch of {len(batch)} stock tickers")
-        
-        logger.info(f"Completed inserting {len(stocks)} stock tickers")
     
     def _load_tickers_from_bigquery(self, client: bigquery.Client, 
                                     table_id: str) -> Set[str]:
@@ -247,8 +234,7 @@ class StockAnalyzer:
 
         text = text[:2000]
 
-        pattern = r'(?<!\w)(?:\$)?([A-Za-z]{2,5})(?![a-zA-Z])'
-        matches = re.findall(pattern, text)
+        matches = self.ticker_pattern.findall(text)
 
         tickers = {
             match.upper()
@@ -259,40 +245,35 @@ class StockAnalyzer:
         }
 
         return list(tickers)[:10]
-
+    
     def analyze_sentiment_batch(self, texts: List[str], scores: List[int]) -> List[Dict[str, Any]]:
         """Batch sentiment analysis using transformers pipeline."""
         results = self.sentiment_pipeline(texts, batch_size=16)
 
         output = []
         for i, res in enumerate(results):
-            # Handle case where res is a list of dictionaries (newer pipeline format)
+            # Normalize result into a score dictionary
             if isinstance(res, list):
-                # Find the highest scoring sentiment
-                highest_score = 0
-                label = "NEUTRAL"
-                conf = 0.0
-                
-                for item in res:
-                    if 'score' in item and item['score'] > highest_score:
-                        highest_score = item['score']
-                        label = item['label']
-                        conf = item['score']
+                score_dict = {item["label"].upper(): item["score"] for item in res}
             else:
-                # Handle the original format where res is a dictionary
-                label = res['label']
-                conf = res['score']
+                score_dict = {res["label"].upper(): res["score"]}
 
-            sentiment = {
-                "compound": round(conf if label == "POSITIVE" else -conf if label == "NEGATIVE" else 0.0, 3),
-                "positive": conf if label == "POSITIVE" else 0.0,
-                "negative": conf if label == "NEGATIVE" else 0.0,
-                "neutral": conf if label == "NEUTRAL" else 0.0,
-            }
+            # Pull individual scores with fallback
+            pos = score_dict.get("POSITIVE", 0.0)
+            neg = score_dict.get("NEGATIVE", 0.0)
+            neu = score_dict.get("NEUTRAL", 0.0)
 
-            confidence = self.calc_confidence_score(sentiment['compound'], scores[i])
+            # Calculate compound as net sentiment: positive - negative
+            compound = round(pos - neg, 3)
+
+            # Confidence from compound + Reddit score
+            confidence = self.calc_confidence_score(compound, scores[i])
+
             output.append({
-                **sentiment,
+                "compound": compound,
+                "positive": pos,
+                "negative": neg,
+                "neutral": neu,
                 "confidence": confidence
             })
 
@@ -300,69 +281,37 @@ class StockAnalyzer:
 
     
     def extract_signals_regex(self, text: str, ticker: str) -> List[str]:
-        """Extract trading signals using regex patterns (faster than NLP)"""
+        """Extract trading signals using precompiled regex patterns (faster than NLP)"""
         signals = []
-        
-        # Trading signals - Buy indicators
-        if re.search(r'\b(buy|bought|buying|long|calls|bullish|moon|rocket|🚀|💎|🙌|going up|to the moon|undervalued|cheap|discount)\b', text, re.IGNORECASE):
+
+        if self.regex_buy.search(text):
             signals.append("BUY")
-        
-        # Trading signals - Sell indicators
-        if re.search(r'\b(sell|selling|sold|short|puts|bearish|crash|dump|tank|dropping|overvalued|expensive|bubble|correction|margin call)\b', text, re.IGNORECASE):
+
+        if self.regex_sell.search(text):
             signals.append("SELL")
-        
-        # Trading signals - Hold indicators
-        if re.search(r'\b(hold|holding|hodl|diamond hands|patient|patience|long term|longterm)\b', text, re.IGNORECASE):
+
+        if self.regex_hold.search(text):
             signals.append("HOLD")
-        
-        # Price target mentions - simplified to just check for price values
-        price_targets = self.extract_price_targets(text, ticker)
+
+        price_targets = self.extract_price_and_percent_signals(text)
         if price_targets:
             for target_type, value in price_targets.items():
                 signals.append(f"{target_type}:{value}")
-        
-        # Earnings/financial performance signals
-        if re.search(r'\b(earnings|revenue|growth|profit|loss|guidance|forecast|EPS|P/E|dividend)\b', text, re.IGNORECASE):
+
+        if self.regex_earnings.search(text):
             signals.append("EARNINGS")
-        
-        # News/catalyst signals
-        if re.search(r'\b(news|announcement|released|launched|partnership|acquisition|merger|FDA|approval|patent|lawsuit)\b', text, re.IGNORECASE):
+
+        if self.regex_news.search(text):
             signals.append("NEWS")
-        
+
+        if self.regex_technical.search(text):
+            signals.append("TECHNICAL")
+
+        if self.regex_options.search(text):
+            signals.append("OPTIONS")
+
         return signals
-    
-    def extract_signals_spacy(self, text: str, ticker: str) -> List[str]:
-        """Extract trading signals using NLP (slower but more accurate)"""
-        signals = []
-        
-        # Use spaCy to process the text
-        doc = self.nlp(text)
-        
-        # Advanced signal detection with confidence levels
-        for sentence in doc.sents:
-            sentence_text = sentence.text.strip()
-            if ticker in sentence_text or f"${ticker}" in sentence_text:
-                # Trading signals - Buy indicators
-                if re.search(r'\b(buy|bought|buying|long|calls|bullish|moon|rocket|🚀|💎|🙌|going up|to the moon|undervalued|cheap|discount)\b', sentence_text, re.IGNORECASE):
-                    signals.append("BUY")
-                
-                # Trading signals - Sell indicators
-                elif re.search(r'\b(sell|selling|sold|short|puts|bearish|crash|dump|tank|dropping|overvalued|expensive|bubble|correction|margin call)\b', sentence_text, re.IGNORECASE):
-                    signals.append("SELL")
-                
-                # Trading signals - Hold indicators
-                elif re.search(r'\b(hold|holding|hodl|diamond hands|patient|patience|long term|longterm)\b', sentence_text, re.IGNORECASE):
-                    signals.append("HOLD")
-                
-                # Technical analysis signals
-                if re.search(r'\b(resistance|support|trend|breakout|pattern|cup|handle|head|shoulders|triangle|wedge|channel|RSI|MACD|oversold|overbought)\b', sentence_text, re.IGNORECASE):
-                    signals.append("TECHNICAL")
-                
-                # Options-related signals
-                if re.search(r'\b(option|call|put|strike|expiry|contracts|leaps|covered|naked|straddle|strangle|iron condor|spread)\b', sentence_text, re.IGNORECASE):
-                    signals.append("OPTIONS")
-        
-        return signals
+
     
     def calc_confidence_score(self, sentiment_score: float, reddit_score: int) -> float:
         """
@@ -387,35 +336,42 @@ class StockAnalyzer:
         
         return round(confidence, 2)
     
-    def extract_price_targets(self, text: str, ticker: str) -> Dict[str, float]:
+    def extract_price_and_percent_signals(self, text: str) -> Dict[str, float]:
         """
-        Extract price targets mentioned for a stock.
+        Extract the first price and percentage change from the text.
+        Skips overlapping patterns (e.g., 5% is not counted as a price).
         
-        Args:
-            text: Text to analyze
-            ticker: Stock ticker
-            
         Returns:
-            Dictionary with target types and values
+            Dictionary with optional keys 'PT' and 'CHANGE'
         """
-        targets = {}
-        
-        # Look for price targets in various formats
-        # e.g. "$AAPL price target $150", "TSLA to $420"
-        
-        # General price target pattern
-        pt_pattern = fr'(?:{ticker}|${ticker}).*?(?:price target|target price|PT)\s*\$?(\d+(?:\.\d+)?)'
-        pt_matches = re.findall(pt_pattern, text, re.IGNORECASE)
-        if pt_matches:
-            targets['PT'] = float(pt_matches[0])
-        
-        # "to $X" pattern (often implies a target)
-        to_pattern = fr'(?:{ticker}|${ticker}).*?to\s+\$(\d+(?:\.\d+)?)'
-        to_matches = re.findall(to_pattern, text, re.IGNORECASE)
-        if to_matches and 'PT' not in targets:
-            targets['PT'] = float(to_matches[0])
-        
-        return targets
+        signals = {}
+        percent_positions = set()
+
+        # Extract percentage change
+        for match in self.regex_percent.finditer(text):
+            try:
+                val = float(match.group(1))
+                signals['CHANGE'] = val
+                percent_positions.update(range(match.start(), match.end()))
+                break  # Only take first
+            except ValueError:
+                continue
+
+        # Extract price, skip if it overlaps with a % match
+        for match in self.regex_price.finditer(text):
+            if any(pos in percent_positions for pos in range(match.start(), match.end())):
+                continue
+            try:
+                val = float(match.group(1))
+                if 1 <= val <= 10000:
+                    signals['PT'] = val
+                    break  # Only take first
+            except ValueError:
+                continue
+
+        return signals
+
+
     
     def extract_ticker_context(self, text: str, ticker: str, window_size: int = 150) -> str:
         """
@@ -460,25 +416,26 @@ class StockAnalyzer:
         
         return ""
 
-    def _process_batch(self, batch_args):
+    def _process_batch(self, batch_df: pd.DataFrame) -> List[StockMention]:
         """
         Process a single batch of Reddit data.
         This must be a method for class integration.
         
         Args:
-            batch_args: Tuple containing (batch_df, analyzer)
+            batch_df: DataFrame containing Reddit data
             
         Returns:
             List of StockMention objects
         """
-        batch_df, analyzer = batch_args
+        logger.info(f"Starting to process batch of {len(batch_df)} Reddit posts")
+        
         batch_mentions = []
         
         # Process each post in the batch
-        for _, row in batch_df.iterrows():
+        for row in batch_df.itertuples(index=False):    
             # Combine title and content for posts
-            text = row['content']
-            if pd.notna(row['title']) and row['title']:
+            text = row.content
+            if pd.notna(row.title) and row.title:
                 text = f"{row['title']} {text}"
             
             # Skip if text is empty or not a string
@@ -489,43 +446,60 @@ class StockAnalyzer:
             scores = []
             ticker_contexts = []
             tickers_to_analyze = []
+            score = getattr(row, "score", 0)
+            message_id = getattr(row, "message_id", 0)
 
             # Extract stock tickers mentioned in the text
-            mentioned_tickers = analyzer.extract_stock_mentions(text)
+            mentioned_tickers = self.extract_stock_mentions(text)
             for ticker in mentioned_tickers:
-                context = analyzer.extract_ticker_context(text, ticker, window_size=100) or text[:500]
+                context = self.extract_ticker_context(text, ticker, window_size=100) or text[:500]
                 texts.append(context[:512])
-                scores.append(row['score'] if isinstance(row['score'], (int, float)) else 0)
+                scores.append(score if isinstance(score, (int, float, np.int64)) else 0)
                 ticker_contexts.append(context)
                 tickers_to_analyze.append((row, ticker))  # store row and ticker together
                 
             if texts:
-                sentiments = analyzer.analyze_sentiment_batch(texts, scores)
+                sentiments = self.analyze_sentiment_batch(texts, scores)
 
                 # Attach sentiment results to StockMention
                 for i, sentiment in enumerate(sentiments):
                     row, ticker = tickers_to_analyze[i]
                     mention = StockMention(
-                        message_id=row['message_id'],
+                        message_id=getattr(row, 'message_id'),
                         ticker=ticker,
-                        author=row['author'],
-                        created_at=row['created_at'],
-                        subreddit=row['subreddit'],
-                        url=row['url'],
+                        author=getattr(row, 'author'),
+                        created_at=getattr(row, 'created_at'),
+                        subreddit=getattr(row, 'subreddit'),
+                        url=getattr(row, 'url'),
                         score=scores[i],
-                        message_type=row['message_type'],
+                        message_type=getattr(row, 'message_type'),
                         sentiment_compound=sentiment['compound'],
                         sentiment_positive=sentiment['positive'],
                         sentiment_negative=sentiment['negative'],
                         sentiment_neutral=sentiment['neutral'],
-                        signals=[],  # optionally apply signals here
+                        signals=self.extract_signals_regex(ticker_contexts[i], ticker),
                         context=ticker_contexts[i][:200],
                         confidence=sentiment['confidence']
                     )
+
                     batch_mentions.append(mention)
-        
+                    
+        self.save_batch_mentions(batch_mentions)
         logger.info(f"Processed batch and found {len(batch_mentions)} stock mentions")
         return batch_mentions
+    
+    def save_batch_mentions(self, batch_mentions: List[StockMention]):
+        """
+        Save a batch of stock mentions to BigQuery.
+        """
+        from src.activities.persistence_activities import save_stock_mentions_activity
+
+        
+        save_result = save_stock_mentions_activity(batch_mentions)
+        logger.info(f"Saved {save_result} stock mentions to BigQuery")
+        
+        return save_result
+        
     
     def process_reddit_data(self, df: pd.DataFrame) -> List[StockMention]:
         """
@@ -538,7 +512,7 @@ class StockAnalyzer:
         Returns:
             List of StockMention objects
         """
-        import multiprocessing as mp
+        from multiprocessing.dummy import Pool as ThreadPool
         import time
         
         if df.empty:
@@ -549,7 +523,7 @@ class StockAnalyzer:
         logger.info(f"Processing {total_rows} Reddit posts for stock mentions")
         
         # Define batch size - smaller for better parallelization
-        BATCH_SIZE = 500  # Reduced from 10000 to 1000
+        BATCH_SIZE = 500  # Reduced from 10000 to 500
         logger.info(f"Using batch size of {BATCH_SIZE} posts per worker")
         
         # Create batches
@@ -560,19 +534,17 @@ class StockAnalyzer:
             batches.append(df.iloc[batch_start:batch_end])
         
         # Determine number of processes to use
-        num_processes = min(mp.cpu_count(), len(batches))
+        num_processes = min(os.cpu_count(), len(batches))
         logger.info(f"Using {num_processes} processes to handle {len(batches)} batches")
         
-        # Create batch arguments for each process (pair of batch and analyzer)
-        batch_args = [(batch, self) for batch in batches]
-        
+                
         # Process batches in parallel
         stock_mentions = []
         start_time = time.time()
         
-        with mp.Pool(processes=num_processes) as pool:
+        with ThreadPool(num_processes) as pool:
             # Use the global _process_batch function instead of a local one
-            results = pool.map(self._process_batch, batch_args)
+            results = pool.map(self._process_batch, batches)
             
             # Flatten results list
             for i, batch_result in enumerate(results):

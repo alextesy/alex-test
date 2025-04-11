@@ -10,6 +10,8 @@ import sys
 import asyncio
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from typing import List, Dict, Any
+from src.models.stock_data import StockMention
 
 # Configure logging
 logging.basicConfig(
@@ -57,7 +59,7 @@ def setup_bigquery():
     bq_manager.setup_tables()
     return bq_manager
 
-def extract_reddit_data(current_time):
+def extract_reddit_data(current_time) -> List[Dict[str, Any]]:
     """Extract data from Reddit."""
     from src.activities.extraction_activities import extract_reddit_data_activity
     from src.activities.state_activities import (
@@ -75,37 +77,18 @@ def extract_reddit_data(current_time):
     
     return reddit_data
 
-def analyze_stock_mentions(reddit_data, current_time):
+def analyze_stock_mentions(reddit_data: List[Dict[str, Any]], current_time: datetime):
     """Analyze data for stock mentions."""
     from src.activities.analysis_activities import analyze_stock_mentions_activity
     from src.activities.state_activities import (
-        get_step_last_run_activity,
         update_step_timestamp_activity,
         STEP_ANALYSIS
     )
     
-    analysis_last_run = run_async_activity(get_step_last_run_activity, STEP_ANALYSIS)
-    stock_mentions = run_async_activity(analyze_stock_mentions_activity, reddit_data)
-    logger.info(f"Found {len(stock_mentions)} stock mentions")
+    run_async_activity(analyze_stock_mentions_activity, reddit_data)
     # Update analysis timestamp
     run_async_activity(update_step_timestamp_activity, STEP_ANALYSIS, current_time)
     
-    return stock_mentions
-
-def save_stock_mentions(stock_mentions, current_time):
-    """Save stock mentions to BigQuery."""
-    from src.activities.persistence_activities import save_stock_mentions_activity
-    from src.activities.state_activities import (
-        update_step_timestamp_activity,
-        STEP_STOCK_PERSISTENCE
-    )
-    
-    save_result = run_async_activity(save_stock_mentions_activity, stock_mentions)
-    logger.info(f"Saved {save_result} stock mentions to BigQuery")
-    # Update stock persistence timestamp
-    run_async_activity(update_step_timestamp_activity, STEP_STOCK_PERSISTENCE, current_time)
-    
-    return save_result
 
 def aggregate_summaries(stock_mentions, current_time):
     """Aggregate summaries at different time intervals."""
@@ -201,16 +184,13 @@ def main():
         reddit_data = extract_reddit_data(current_time)
         
         # 2. Analyze data for stock mentions
-        stock_mentions = analyze_stock_mentions(reddit_data, current_time)
+        analyze_stock_mentions(reddit_data, current_time)
         
-        # 3. Save stock mentions to BigQuery
-        save_stock_mentions(stock_mentions, current_time)
+        # # 3. Aggregate summaries
+        # daily_summaries, hourly_summaries, weekly_summaries = aggregate_summaries(stock_mentions, current_time)
         
-        # 4. Aggregate summaries
-        daily_summaries, hourly_summaries, weekly_summaries = aggregate_summaries(stock_mentions, current_time)
-        
-        # 5. Save aggregated data
-        save_aggregated_data(daily_summaries, hourly_summaries, weekly_summaries, current_time)
+        # # 4. Save aggregated data
+        # save_aggregated_data(daily_summaries, hourly_summaries, weekly_summaries, current_time)
         
         logger.info("ETL job completed successfully")
         
